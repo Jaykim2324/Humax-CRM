@@ -1786,6 +1786,52 @@ function renderDashboard() {
         })()}
       </div>
 
+      <div class="card">
+        <div class="card-title" style="margin-bottom:16px">🏪 Active Wholesaler Branches &amp; Installers</div>
+        ${(()=>{
+          const activeBr = bs.filter(isActiveBranch);
+          const activeIn = is.filter(isActiveInstaller);
+          return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">'
+            +'<div>'
+            +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+            +'<span style="font-size:26px;font-family:DM Mono,monospace;font-weight:700;color:var(--teal)">'+activeBr.length+'</span>'
+            +'<span style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px">ACTIVE BRANCHES</span>'
+            +'</div>'
+            +'<div style="display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;padding-right:4px">'
+            +(activeBr.length===0
+              ?'<div style="font-size:12px;color:var(--muted);padding:8px 0">No active branches yet</div>'
+              :activeBr.map(b=>
+                '<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#f8fafc;border-radius:7px;border:1px solid var(--border);margin-bottom:2px">'
+                +'<span style="font-size:9px;color:var(--teal)">\u25CF</span>'
+                +'<span style="font-size:12px;font-weight:600;flex:1">'+b['Branch']+'</span>'
+                +'<span style="font-size:10px;color:var(--muted)">'+b['Account']+'</span>'
+                +(STATE.role==='manager'?'<span style="font-size:10px;padding:1px 5px;border-radius:99px;background:rgba(0,197,163,.1);color:var(--teal)">'+b['Humax Sales Rep']+'</span>':'')
+                +'</div>'
+              ).join('')
+            )
+            +'</div></div>'
+            +'<div>'
+            +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+            +'<span style="font-size:26px;font-family:DM Mono,monospace;font-weight:700;color:#6366f1">'+activeIn.length+'</span>'
+            +'<span style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px">ACTIVE INSTALLERS</span>'
+            +'</div>'
+            +'<div style="display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;padding-right:4px">'
+            +(activeIn.length===0
+              ?'<div style="font-size:12px;color:var(--muted);padding:8px 0">No active installers yet</div>'
+              :activeIn.map(i=>
+                '<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#f8fafc;border-radius:7px;border:1px solid var(--border);margin-bottom:2px">'
+                +'<span style="font-size:9px;color:#6366f1">\u25CF</span>'
+                +'<span style="font-size:12px;font-weight:600;flex:1">'+((i['Company']||'').trim()||'\u2014')+'</span>'
+                +(i['_inst_product_listing']?'<span style="font-size:10px;padding:1px 5px;border-radius:99px;background:rgba(16,185,129,.1);color:var(--green)">\uD83D\uDCCB Listed</span>':'')
+                +(STATE.role==='manager'?'<span style="font-size:10px;padding:1px 5px;border-radius:99px;background:rgba(99,102,241,.1);color:#6366f1;margin-left:2px">'+i['Humax Sales Rep']+'</span>':'')
+                +'</div>'
+              ).join('')
+            )
+            +'</div></div>'
+            +'</div>';
+        })()}
+      </div>
+
       ${isManager ? `
       <div class="card">
         <div class="card-title">👥 Rep Performance</div>
@@ -2753,11 +2799,11 @@ function renderInstallers() {
       <table>
         <thead><tr>
           ${sh('Company','Company')}
+          <th>Status</th>
+          <th>Product Listing</th>
           <th>Email</th>
           <th>Direct Number</th>
           <th>Post Code</th>
-          <th>Last Contact</th>
-          <th>Follow Up</th>
           <th style="min-width:120px">FCST / Order</th>
           <th>Activities</th>
           <th>Notes</th>
@@ -2765,22 +2811,21 @@ function renderInstallers() {
           <th>Action</th>
         </tr></thead>
         <tbody>
-          ${paged.items.length===0?`<tr><td colspan="9"><div class="empty-state"><div class="icon">🔍</div><p>No installers found</p></div></td></tr>`:''}
+          ${paged.items.length===0?`<tr><td colspan="10"><div class="empty-state"><div class="icon">🔍</div><p>No installers found</p></div></td></tr>`:''}
           ${paged.items.map((inst) => {
             const today = new Date(); today.setHours(0,0,0,0);
             const fu = inst['Follow up date'] ? new Date(inst['Follow up date']) : null;
             const isOverdue = fu && fu < today;
             const globalIdx = STATE.installers.indexOf(inst);
             return `<tr${isActiveInstaller(inst)?' style="background:rgba(0,197,163,.03)"':''}>
-              <td>
-                <strong>${(inst['Company']||'').trim()||'—'}</strong>
-                ${isActiveInstaller(inst)?'<br>'+activeBadge('ACTIVE'):''}
-              </td>
+              <td><strong>${(inst['Company']||'').trim()||'—'}</strong></td>
+              <td>${isActiveInstaller(inst)?activeBadge('ACTIVE'):'<span style="color:var(--muted);font-size:11px">—</span>'}</td>
+              <td>${inst['_inst_product_listing']
+                ? '<span class="event-chip visit" style="font-size:11px;padding:3px 8px">📋 Listed'+(inst['_inst_product_listing_date']?' <span style="font-family:DM Mono,monospace;font-size:10px;color:var(--muted)">'+inst['_inst_product_listing_date']+'</span>':'')+'</span>'
+                : '<span style="color:var(--muted);font-size:11px">—</span>'}</td>
               <td style="font-size:12px"><a href="mailto:${inst['Contact Email']||''}" style="color:var(--accent);text-decoration:none">${inst['Contact Email']||'—'}</a></td>
               <td style="font-family:'DM Mono',monospace;font-size:12px">${inst['Direct Number']||'—'}</td>
               <td style="font-family:'DM Mono',monospace;font-size:12px">${inst['Post Code']||'—'}</td>
-              <td><span class="${inst['Last contact date']?'':'text-muted'}" style="font-family:'DM Mono',monospace;font-size:12px">${inst['Last contact date']||'—'}</span></td>
-              <td class="${isOverdue?'urgent':''}" style="font-family:'DM Mono',monospace;font-size:12px">${inst['Follow up date']||'—'}${isOverdue?' ⚠️':''}</td>
               <td>${qtyCell(inst)}</td>
               <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${inst['Notes']||''}">${inst['Notes']||'<span class="text-muted">—</span>'}</td>
               <td style="min-width:140px">
@@ -3613,8 +3658,6 @@ function openEdit(type, idx) {
       <div class="modal-field"><label>Direct Number</label><input id="mf-Direct Number" value="${esc(rec['Direct Number'])}"></div>
       <div class="modal-field"><label>Customer Number</label><input id="mf-Customer Number" value="${esc(rec['Customer Number'])}"></div>
       <div class="modal-field"><label>Post Code</label><input id="mf-Post Code" value="${esc(rec['Post Code'])}"></div>
-      <div class="modal-field"><label>Last Contact Date</label><input type="date" id="mf-Last contact date" value="${rec['Last contact date']||''}"></div>
-      <div class="modal-field"><label>Follow Up Date</label><input id="mf-Follow up date" type="date" value="${rec['Follow up date']||''}"></div>
       <div class="modal-field full"><label>Notes</label><textarea id="mf-Notes">${esc(rec['Notes'])}</textarea></div>
       <div class="modal-field full"><label>Action Plan</label><textarea id="mf-Action Plan">${esc(rec['Action Plan'])}</textarea></div>
       ${STATE.role==='manager'?`<div class="modal-field"><label>Sales Rep</label><select id="mf-Humax Sales Rep"><option ${rec['Humax Sales Rep']==='Simon'?'selected':''}>Simon</option><option ${rec['Humax Sales Rep']==='Mudassar'?'selected':''}>Mudassar</option></select></div>`:''}

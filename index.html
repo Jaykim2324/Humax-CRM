@@ -176,6 +176,11 @@ td .sub{font-size:11px;color:var(--ink-3)}
 .model-tabs{display:flex;gap:6px;margin-bottom:10px}
 .model-tab{padding:6px 14px;border-radius:20px;border:1px solid var(--line);font-size:12px;font-weight:600;color:var(--ink-3)}
 .model-tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+.year-tabs{display:inline-flex;border:1px solid var(--line);border-radius:20px;padding:2px;background:var(--card);margin-bottom:10px}
+.year-tab{padding:5px 14px;border-radius:18px;font-size:12px;font-weight:600;color:var(--ink-3)}
+.year-tab.active{background:#001C3D;color:#fff}
+.plan-note{font-size:12px;color:var(--ink-2);background:var(--panel);border:1px dashed var(--line);border-radius:10px;padding:10px 14px;margin-bottom:14px}
+.fcst-tbl td.ro{color:var(--ink);font-variant-numeric:tabular-nums}
 .sub-head{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);font-weight:600;
   margin:18px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line-2)}
 
@@ -407,10 +412,12 @@ const BP_MX22 = [0,0,0,0,0,0,0,15,60,160,210,360];            // sum 805
 const DM_MX7_DEFAULT  = BP_MX7.slice();
 const DM_MX22_DEFAULT = BP_MX22.slice();
 
-const APP_VERSION = 'v15.2';
-const APP_BUILD = '2026-07-20';
+const APP_VERSION = 'v15.3';
+const APP_BUILD = '2026-10-19';
 const LS_DATA = 'humax_b2b_pipeline_v1';
 const LS_CFG  = 'humax_b2b_cfg_v1';
+const LS_PLANS = 'humax_b2b_plans_v1';   // per-year Summary FCST blocks (e.g. 2027 BP) last pulled from Sheets
+const YEARS = ['2026','2027'];          // 2026 = live FCST (Qty_Input) · 2027 = BP from Summary FCST sheet
 
 /* ---------- State ---------- */
 let STATE = {
@@ -426,6 +433,9 @@ let STATE = {
   modalModel: 'MX7',
   sheetSummary: null,   // {mx7:[12], mxp:[12]} from Summary FCST sheet when synced
   syncInfo: null,       // last pull diagnostics
+  plans: {},            // {'2027': {mx7:[12], mxp:[12], rows:[{id,name,segment,stage,target_product,mx7:[12],mxp:[12]}]}}
+  dashYear: '2026',
+  fcstYear: '2026',
 };
 let CFG = { gasUrl:'', autoSync:true, dmMX7:DM_MX7_DEFAULT.slice(), dmMX22:DM_MX22_DEFAULT.slice(), priceMX7:0, priceMX22:0, actualMX7:Array(12).fill(0), actualMX22:Array(12).fill(0) };
 
@@ -526,6 +536,50 @@ function fmtMoney(n){
   if(n>=1e3) return '£'+(n/1e3).toFixed(0)+'k';
   return '£'+n.toLocaleString('en-US');
 }
+/* ---------- Year plans read from the Summary FCST sheet (2027 BP) ---------- */
+function planOf(year){
+  const p=STATE.plans && STATE.plans[year];
+  if(!p || !Array.isArray(p.mx7) || p.mx7.length!==12) return null;
+  return p;
+}
+function planMonthly(year, model){
+  const p=planOf(year); if(!p) return Array(12).fill(0);
+  return norm12(model==='MX7' ? p.mx7 : p.mxp);
+}
+function normPlans(years){
+  const out={};
+  if(!years || typeof years!=='object') return out;
+  Object.keys(years).forEach(y=>{
+    if(y==='2026') return;                       // 2026 stays live from Qty_Input
+    const b=years[y]||{};
+    out[y]={ mx7:norm12(b.mx7), mxp:norm12(b.mxp),
+      rows:(Array.isArray(b.rows)?b.rows:[]).map(r=>({
+        id:String(r.id||'').trim(), name:String(r.name||'').trim(),
+        segment:r.segment||'', stage:normStage(r.stage), target_product:r.target_product||'',
+        mx7:norm12(r.mx7), mxp:norm12(r.mxp) })) };
+  });
+  return out;
+}
+// Rows of a plan year for one model, enriched with local pipeline info (segment/stage) by ID + name
+function planRows(year, model){
+  const p=planOf(year); if(!p) return [];
+  const key=(id,nm)=>String(id||'').trim()+'|'+String(nm||'').trim().toLowerCase();
+  const local={}; STATE.customers.forEach(c=>{ local[key(c.id,c.name)]=c; });
+  const want = model==='MX7' ? ['MX7','MX7+MX Pro'] : ['MX Pro','MX7+MX Pro'];
+  return p.rows.map(r=>{
+    const c=local[key(r.id,r.name)];
+    const tp=(c&&c.target_product)||r.target_product;
+    return { id:r.id, name:r.name||(c&&c.name)||r.id, segment:(c&&c.segment)||r.segment||'',
+      stage:(c&&c.stage)||r.stage, target_product:tp, localId:c?c.id:null,
+      months: model==='MX7'?r.mx7:r.mxp };
+  }).filter(r=> want.includes(r.target_product) || sum(r.months)>0)
+    .sort((a,b)=> SEG_NAMES.indexOf(a.segment)-SEG_NAMES.indexOf(b.segment) || a.name.localeCompare(b.name));
+}
+function yearTabs(stateKey){
+  return `<div class="year-tabs">${YEARS.map(y=>
+    `<button class="year-tab ${STATE[stateKey]===y?'active':''}" onclick="STATE.${stateKey}='${y}';render()">${y}</button>`).join('')}</div>`;
+}
+
 function earlyRows(){
   return STATE.customers
     .filter(c=>['suspect','prospect','qualified'].includes(c.stage))
@@ -549,6 +603,10 @@ function loadLocal(){
   try{
     const c=localStorage.getItem(LS_CFG);
     if(c) CFG=Object.assign(CFG,JSON.parse(c));
+  }catch(e){}
+  try{
+    const p=localStorage.getItem(LS_PLANS);
+    if(p) STATE.plans=normPlans(JSON.parse(p));
   }catch(e){}
   // If DM arrays are missing or wrong length, fall back to defaults (=BP)
   CFG.dmMX7  = norm12(CFG.dmMX7 && CFG.dmMX7.length===12 ? CFG.dmMX7 : DM_MX7_DEFAULT);
@@ -672,11 +730,20 @@ async function sheetsPull({silent=false}={}){
     if(j&&j.ok&&Array.isArray(j.rows)){
       STATE.customers = j.rows.length ? payloadToRows(j.rows) : STATE.customers;
       STATE.sheetSummary = (j.summary && Array.isArray(j.summary.mx7)) ? j.summary : null;
+      // Year blocks (e.g. 2027 BP) from "Summary FCST 2026_2027" — needs GAS v15.3+
+      const hasYears = !!(j.summary && j.summary.years && typeof j.summary.years==='object');
+      if(hasYears){
+        STATE.plans = normPlans(j.summary.years);
+        try{ localStorage.setItem(LS_PLANS, JSON.stringify(STATE.plans)); }catch(e){}
+      }
       if(j.config && typeof j.config==='object') applySheetConfig(j.config);
       // diagnostics for the Data & Sync panel
       const s7 = STATE.sheetSummary ? STATE.sheetSummary.mx7.reduce((a,b)=>a+num(b),0) : null;
       const sp = STATE.sheetSummary ? STATE.sheetSummary.mxp.reduce((a,b)=>a+num(b),0) : null;
-      STATE.syncInfo = { at:new Date().toLocaleTimeString(), rows:j.rows.length, hasSummary:!!STATE.sheetSummary, mx7:s7, mxp:sp };
+      const p27 = planOf('2027');
+      STATE.syncInfo = { at:new Date().toLocaleTimeString(), rows:j.rows.length, hasSummary:!!STATE.sheetSummary,
+        mx7:s7, mxp:sp, hasYears, sheet:(j.summary&&j.summary.sheet)||'',
+        bp27:p27?{mx7:sum(p27.mx7), mxp:sum(p27.mxp)}:null };
       saveLocal(); render();
       setConn('on','Synced with Sheets'); setTimeout(refreshConn,1500);
       if(!silent){
@@ -720,6 +787,7 @@ function render(){
 
 /* ---------- Dashboard ---------- */
 function viewDash(){
+  const is27 = STATE.dashYear==='2027';
   const named=STATE.customers.filter(c=>String(c.name||'').trim()!=='');
   const total=named.length;
   const fcstCount=named.filter(c=>FCST_STAGES.includes(c.stage)).length;
@@ -758,9 +826,10 @@ function viewDash(){
   <div class="page-head">
     <div>
       <div class="page-title">Dashboard</div>
-      <div class="page-sub">${total} accounts · ${fcstCount} in FCST stages · progress vs 2026 BP</div>
+      <div class="page-sub">${total} accounts · ${fcstCount} in FCST stages · ${is27?'2027 Business Plan (Summary FCST sheet)':'progress vs 2026 BP'}</div>
     </div>
     <div class="page-actions">
+      ${yearTabs('dashYear')}
       <button class="btn primary" onclick="openCust()">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
         New pipeline
@@ -768,7 +837,7 @@ function viewDash(){
     </div>
   </div>
 
-  <div class="grid stat-grid" style="margin-bottom:18px">
+  ${is27 ? dash27Cards(total) : `<div class="grid stat-grid" style="margin-bottom:18px">
     <div class="stat"><div class="k">Total pipeline</div><div class="v">${total}</div><div class="d">${SEG_NAMES.length} segments</div></div>
     <div class="stat"><div class="k">Total FCST</div><div class="v">${fmt(mx7Fcst+mx22Fcst)}</div>
       <div class="d rev">${priceSet?fmtMoney(rev.total):'Set prices in Data &amp; Sync'}</div>
@@ -779,7 +848,7 @@ function viewDash(){
     <div class="stat"><div class="k">MX Pro FCST</div><div class="v">${fmt(mx22Fcst)}</div>
       <div class="d rev">${priceSet?fmtMoney(rev.mxp):'—'}</div>
       <div class="d">BP ${fmt(bp22)} · DM ${fmt(dm22)} · <span class="${mx22Fcst>=dm22?'up':'dn'}">${dm22?Math.round(mx22Fcst/dm22*100):0}%</span></div></div>
-  </div>
+  </div>`}
 
   <div class="card card-pad" style="margin-bottom:18px">
     <div class="row-flex" style="justify-content:space-between;margin-bottom:14px">
@@ -792,7 +861,7 @@ function viewDash(){
     </div>
   </div>
 
-  ${evMonthlyChart()}
+  ${is27 ? dash27Chart() : evMonthlyChart()}
 
   <div class="card">
     <div class="card-pad" style="border-bottom:1px solid var(--line);font-weight:600;font-size:14px">By segment</div>
@@ -846,9 +915,10 @@ function segDonut(data, total){
 }
 
 /* EV Monthly FCST chart — MX7 vs MX Pro (units) */
-function evMonthlyChart(){
-  const f7 = fcstMonthlyLocal('MX7');
-  const fp = fcstMonthlyLocal('MX Pro');
+function evMonthlyChart(opts={}){
+  const f7 = opts.f7 || fcstMonthlyLocal('MX7');
+  const fp = opts.fp || fcstMonthlyLocal('MX Pro');
+  const tag = opts.tag || 'FCST';
   const tot = f7.map((v,i)=> v + fp[i]);
 
   const W=1180, H=340, padL=44, padR=20, padT=54, padB=42;
@@ -903,12 +973,12 @@ function evMonthlyChart(){
   }
 
   const legend=`
-    <span class="lg"><span class="sw" style="background:#0066CC"></span>MX7 FCST</span>
-    <span class="lg"><span class="sw" style="background:${cMXP}"></span>MX Pro FCST</span>
-    <span class="lg"><span class="sw-line"></span>Total FCST trend (units)</span>`;
+    <span class="lg"><span class="sw" style="background:#0066CC"></span>MX7 ${tag}</span>
+    <span class="lg"><span class="sw" style="background:${cMXP}"></span>MX Pro ${tag}</span>
+    <span class="lg"><span class="sw-line"></span>Total ${tag} trend (units)</span>`;
 
   const totMX7=sum(f7), totMXP=sum(fp);
-  const rev=revenueTotals();
+  const rev={ mx7:totMX7*priceOf('MX7'), mxp:totMXP*priceOf('MX Pro') }; rev.total=rev.mx7+rev.mxp;
   const priceSet = priceOf('MX7')>0 || priceOf('MX Pro')>0;
   const revLine = priceSet
     ? ` · Revenue ${fmtMoney(rev.total)} (MX7 ${fmtMoney(rev.mx7)} · MX Pro ${fmtMoney(rev.mxp)})`
@@ -917,7 +987,7 @@ function evMonthlyChart(){
   return `
   <div class="card card-pad" style="margin-bottom:18px">
     <div class="row-flex" style="justify-content:space-between;align-items:flex-start;margin-bottom:6px;flex-wrap:wrap;gap:8px">
-      <div style="font-weight:600;font-size:14px">EV Monthly FCST — MX7 vs MX Pro (units)</div>
+      <div style="font-weight:600;font-size:14px">${opts.title || 'EV Monthly FCST — MX7 vs MX Pro (units)'}</div>
       <div class="chart-legend">${legend}</div>
     </div>
     <div style="overflow-x:auto">
@@ -926,9 +996,45 @@ function evMonthlyChart(){
       </svg>
     </div>
     <div style="font-size:11.5px;color:var(--ink-3);margin-top:8px">
-      Monthly FCST from Qualified+ pipeline · MX7 ${fmt(totMX7)} · MX Pro ${fmt(totMXP)} · Total ${fmt(totMX7+totMXP)}${revLine} · labels above bars = MoM % of total FCST.
+      ${opts.source || 'Monthly FCST from Qualified+ pipeline'} · MX7 ${fmt(totMX7)} · MX Pro ${fmt(totMXP)} · Total ${fmt(totMX7+totMXP)}${revLine} · labels above bars = MoM % of total ${tag}.
     </div>
   </div>`;
+}
+
+/* ---------- Dashboard · 2027 Business Plan (read from Summary FCST 2026_2027) ---------- */
+function dash27Cards(total){
+  const p=planOf('2027');
+  const b7=sum(planMonthly('2027','MX7')), bp=sum(planMonthly('2027','MX Pro')), bt=b7+bp;
+  const p26=sum(BP_MX7)+sum(BP_MX22), p7_26=sum(BP_MX7), pp_26=sum(BP_MX22);
+  const priceSet = priceOf('MX7')>0 || priceOf('MX Pro')>0;
+  const r7=b7*priceOf('MX7'), rp=bp*priceOf('MX Pro');
+  const yoy=(a,b)=> b ? `<span class="${a>=b?'up':'dn'}">${a>=b?'+':''}${Math.round((a-b)/b*100)}%</span>` : '–';
+  const v=n=> p?fmt(n):'—';
+  return `<div class="grid stat-grid" style="margin-bottom:18px">
+    <div class="stat"><div class="k">Total pipeline</div><div class="v">${total}</div><div class="d">${SEG_NAMES.length} segments</div></div>
+    <div class="stat"><div class="k">2027 BP Total</div><div class="v">${v(bt)}</div>
+      <div class="d rev">${p&&priceSet?fmtMoney(r7+rp):(p?'Set prices in Data &amp; Sync':'—')}</div>
+      <div class="d">2026 BP ${fmt(p26)} · ${p?yoy(bt,p26):'–'} YoY</div></div>
+    <div class="stat"><div class="k">MX7 2027 BP</div><div class="v">${v(b7)}</div>
+      <div class="d rev">${p&&priceSet?fmtMoney(r7):'—'}</div>
+      <div class="d">2026 BP ${fmt(p7_26)} · ${p?yoy(b7,p7_26):'–'} YoY</div></div>
+    <div class="stat"><div class="k">MX Pro 2027 BP</div><div class="v">${v(bp)}</div>
+      <div class="d rev">${p&&priceSet?fmtMoney(rp):'—'}</div>
+      <div class="d">2026 BP ${fmt(pp_26)} · ${p?yoy(bp,pp_26):'–'} YoY</div></div>
+  </div>`;
+}
+function dash27Chart(){
+  if(!planOf('2027')){
+    return `<div class="card card-pad" style="margin-bottom:18px">
+      <div style="font-weight:600;font-size:14px;margin-bottom:6px">2027 Business Plan</div>
+      <div class="plan-note" style="margin:0">No 2027 data loaded yet. Update the Apps Script to <b>v15.3</b> (Data &amp; Sync → Copy → Deploy as <b>New version</b>), then click <b>Load from Sheets</b>.
+      The 2027 numbers are read from the <b>Summary FCST 2026_2027</b> tab.</div></div>`;
+  }
+  return evMonthlyChart({
+    f7: planMonthly('2027','MX7'), fp: planMonthly('2027','MX Pro'), tag:'BP',
+    title:'2027 Business Plan — MX7 vs MX Pro (units)',
+    source:'2027 BP from the Summary FCST 2026_2027 sheet'
+  });
 }
 
 </script>
@@ -1153,6 +1259,7 @@ function deleteCust(){
    FCST view — edit monthly units for Qualified+ accounts
    ========================================================================= */
 function viewFcst(){
+  if(STATE.fcstYear==='2027') return viewFcstPlan('2027');
   const model=STATE.fcstModel;
   const rows=fcstRows(model);
   const bp = model==='MX7'?BP_MX7:BP_MX22;
@@ -1199,14 +1306,15 @@ function viewFcst(){
   <div class="page-head">
     <div>
       <div class="page-title">FCST</div>
-      <div class="page-sub">Monthly units for Qualified+ accounts · click a cell to type${STATE.fcstHideEmpty&&hiddenCount>0?` · <b>${hiddenCount}</b> empty hidden`:''}</div>
+      <div class="page-sub">2026 · Monthly units for Qualified+ accounts · click a cell to type${STATE.fcstHideEmpty&&hiddenCount>0?` · <b>${hiddenCount}</b> empty hidden`:''}</div>
     </div>
     <div class="page-actions">
+      ${yearTabs('fcstYear')}
       <button class="btn sm ${STATE.fcstHideEmpty?'primary':''}" onclick="STATE.fcstHideEmpty=!STATE.fcstHideEmpty;render()" title="Hide Qualified+ accounts that have no monthly units entered">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${STATE.fcstHideEmpty?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>':'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'}</svg>
         ${STATE.fcstHideEmpty?'Show all':'Hide empty'}
       </button>
-      <button class="btn sm" onclick="exportFcstExcel()">
+      <button class="btn sm" onclick="exportFcstExcel('2026')">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
         Download Excel
       </button>
@@ -1229,6 +1337,88 @@ function viewFcst(){
   </div>
   <div style="font-size:11.5px;color:var(--ink-3);margin-top:10px">
     MX7+MX Pro accounts appear in both tabs · units save automatically
+  </div>`;
+}
+/* FCST · plan year (2027) — read-only view of the Summary FCST 2026_2027 sheet block */
+function fcstToolbar(model){
+  return `<button class="btn sm ${STATE.fcstHideEmpty?'primary':''}" onclick="STATE.fcstHideEmpty=!STATE.fcstHideEmpty;render()" title="Hide accounts with no monthly units">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${STATE.fcstHideEmpty?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>':'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'}</svg>
+        ${STATE.fcstHideEmpty?'Show all':'Hide empty'}
+      </button>`;
+}
+function viewFcstPlan(year){
+  const model=STATE.fcstModel;
+  const p=planOf(year);
+  const rows=planRows(year, model);
+  const hideEmpty=STATE.fcstHideEmpty;
+  const shown = hideEmpty ? rows.filter(r=>sum(r.months)>0) : rows;
+  const bySeg={};
+  shown.forEach(r=>{ const s=SEG_NAMES.includes(r.segment)?r.segment:'Other'; (bySeg[s]=bySeg[s]||[]).push(r); });
+  const segOrder=[...SEG_NAMES,'Other'];
+  let body='';
+  segOrder.forEach(seg=>{
+    const list=bySeg[seg]; if(!list||!list.length)return;
+    const dot=(SEGMENTS[seg]&&SEGMENTS[seg].dot)||'#94a3b8';
+    body+=`<tr class="fcst-grp"><td colspan="15">
+      <span class="seg-tag"><span class="dot" style="background:${dot}"></span>${esc(seg)} (${list.length})</span></td></tr>`;
+    list.forEach(r=>{
+      const st=STAGE_MAP[r.stage]||STAGE_MAP.suspect;
+      body+=`<tr>
+        <td style="position:sticky;left:0;background:var(--card)">
+          <div class="nm" ${r.localId?`style="cursor:pointer" onclick="openCust('${r.localId}')"`:''}>${esc(r.name)}</div>
+          <div class="sub"><span class="badge ${st.cls}" style="padding:1px 7px;font-size:10px">${st.name}</span></div>
+        </td>
+        ${r.months.map(v=>`<td class="num mono ro">${v?fmt(v):'<span style="color:var(--ink-4,#c0c6cf)">–</span>'}</td>`).join('')}
+        <td class="num row-tot mono">${fmt(sum(r.months))}</td>
+      </tr>`;
+    });
+  });
+  const hiddenCount=rows.length-shown.length;
+  if(!p){
+    body=`<tr><td colspan="15"><div class="empty"><div class="big">No ${year} data loaded</div>Update the Apps Script to v15.3 (Data &amp; Sync → Copy → Deploy as New version), then Load from Sheets.</div></td></tr>`;
+  }else if(!body){
+    body=`<tr><td colspan="15"><div class="empty"><div class="big">${hideEmpty?'No accounts with '+year+' units':'No accounts in the '+year+' block'}</div>Enter ${year} units in the Summary FCST 2026_2027 sheet, then Load from Sheets.</div></td></tr>`;
+  }
+  const totals=planMonthly(year, model);   // official totals row of the sheet block
+  const totalRow= p ? `<tr class="grand">
+    <td style="position:sticky;left:0">${year} BP total (${rows.length})</td>
+    ${totals.map(t=>`<td class="num mono">${t?fmt(t):'0'}</td>`).join('')}
+    <td class="num mono">${fmt(sum(totals))}</td></tr>` : '';
+  const prev = fcstMonthlyLocal(model);    // 2026 FCST for a YoY reference row
+  const prevRow = p ? `<tr style="background:var(--panel)">
+    <td style="position:sticky;left:0;background:var(--panel);font-weight:600;color:var(--ink-2)">2026 FCST (ref.)</td>
+    ${prev.map(t=>`<td class="num mono" style="color:var(--ink-3)">${t?fmt(t):'–'}</td>`).join('')}
+    <td class="num mono" style="font-weight:600">${fmt(sum(prev))}</td></tr>` : '';
+  const at = STATE.syncInfo && STATE.syncInfo.at ? ' · last loaded '+STATE.syncInfo.at : '';
+  return `
+  <div class="page-head">
+    <div>
+      <div class="page-title">FCST</div>
+      <div class="page-sub">${year} Business Plan by account · read from the Summary FCST 2026_2027 sheet${at}${hideEmpty&&hiddenCount>0?` · <b>${hiddenCount}</b> empty hidden`:''}</div>
+    </div>
+    <div class="page-actions">
+      ${yearTabs('fcstYear')}
+      ${fcstToolbar(model)}
+      <button class="btn sm" onclick="exportFcstExcel('${year}')" ${p?'':'disabled'}>
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+        Download Excel
+      </button>
+      <div class="model-tabs">
+        <button class="model-tab ${model==='MX7'?'active':''}" onclick="STATE.fcstModel='MX7';render()">MX7</button>
+        <button class="model-tab ${model==='MX Pro'?'active':''}" onclick="STATE.fcstModel='MX Pro';render()">MX Pro</button>
+      </div>
+    </div>
+  </div>
+  <div class="plan-note">Read-only. ${year} numbers are maintained in the <b>Summary FCST 2026_2027</b> sheet (columns under <b>${year}</b>). Edit them there, then click <b>Load from Sheets</b> (or the sync button) to refresh.</div>
+  <div class="tbl-wrap">
+    <table class="fcst-tbl">
+      <thead><tr>
+        <th style="position:sticky;left:0;background:var(--panel);z-index:2">Account (${model} · ${year})</th>
+        ${MONTHS.map(m=>`<th class="num">${m}</th>`).join('')}
+        <th class="num row-tot">Total</th>
+      </tr></thead>
+      <tbody>${body}${totalRow}${prevRow}</tbody>
+    </table>
   </div>`;
 }
 function bindFcst(){}
@@ -1396,7 +1586,7 @@ function resetDM(){
 /* =========================================================================
    Data & Sync view
    ========================================================================= */
-const GAS_CODE = `// ===== Humax B2B Pipeline — Google Apps Script Web App (v14, header-mapped) =====
+const GAS_CODE = `// ===== Humax B2B Pipeline — Google Apps Script Web App (v15.3, header-mapped, 2026/2027) =====
 // In Google Sheets: Extensions > Apps Script, paste this code, then
 // Deploy > New deployment > Type: Web app > Who has access: Anyone > Deploy.
 // If you change the code later, Deploy > Manage deployments > (edit) > Version: New version > Deploy.
@@ -1405,10 +1595,13 @@ const GAS_CODE = `// ===== Humax B2B Pipeline — Google Apps Script Web App (v1
 // columns in the sheet will not break the sync. It reads/writes:
 //   Master Pipeline (customer info) + Qty_Input (monthly units), joined by Customer ID,
 //   and returns Summary FCST monthly totals for the dashboard chart.
+// v15.3: the Summary tab may be renamed (e.g. "Summary FCST 2026_2027") and may hold
+//   several year blocks (row: year / row: MX7 / MX Pro group / row: Customer ID + months).
+//   The 2026 block stays linked to Qty_Input; later years (2027 BP) are read as typed.
 
 var MASTER_SHEET  = 'Master Pipeline';
 var QTY_SHEET     = 'Qty_Input';
-var SUMMARY_SHEET = 'Summary FCST';
+var SUMMARY_SHEET = 'Summary FCST';   // exact name, else first tab whose name starts with this
 var CONFIG_SHEET  = 'App_Config';   // key/value settings (prices, actuals, DM) — auto-created
 var HEADER_ROW    = 3;   // header row (1-based)
 var DATA_ROW      = 4;   // first data row (1-based)
@@ -1513,46 +1706,127 @@ function doGet(e){
   return json_({ok:true, rows:rows, summary:summary, config:config});
 }
 
-// Read Summary FCST monthly totals from row 4 (the totals row) using header positions.
-function readSummary_(){
-  var sumMX7 = [0,0,0,0,0,0,0,0,0,0,0,0];
-  var sumMXP = [0,0,0,0,0,0,0,0,0,0,0,0];
-  var sSh = sheet_(SUMMARY_SHEET);
-  if(!sSh) return {mx7:sumMX7, mxp:sumMXP};
-  var v = sSh.getDataRange().getValues();
-  if(v.length < DATA_ROW) return {mx7:sumMX7, mxp:sumMXP};
-
-  // Row 2 (index 1) holds group labels: "MX7 Monthly (Units)" and "MX Pro Monthly (Units)".
-  // Row 3 (index 2) holds month names Jan..Dec (twice) + Total.
-  var groupRow = v[1] || [];
-  var monthRow = v[2] || [];
+// ---- Summary FCST (multi-year) ------------------------------------------
+// Find the Summary tab: exact name first, then any tab starting with "Summary FCST".
+function summarySheet_(){
+  var sh = sheet_(SUMMARY_SHEET);
+  if(sh) return sh;
+  var all = ss_().getSheets();
+  for(var i=0;i<all.length;i++){
+    if(all[i].getName().toLowerCase().indexOf(SUMMARY_SHEET.toLowerCase())===0) return all[i];
+  }
+  return null;
+}
+// Detect the layout from the header row (the row that contains "Customer ID"):
+//   header-2 = year row (2026, 2027 ...)  · header-1 = group row (MX7 / MX Pro Monthly)
+//   header   = Customer ID ... Jan..Dec   · header+1 = totals row · header+2.. = data rows
+function summaryLayout_(v){
   var MON = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-
-  // find the start column of each group label
-  function groupStart(label){
-    for(var c=0;c<groupRow.length;c++){
-      if(String(groupRow[c]||'').toLowerCase().indexOf(label)>=0) return c;
+  var hdr = -1;
+  for(var r=0; r<Math.min(12, v.length) && hdr<0; r++){
+    for(var c=0; c<v[r].length; c++){
+      if(String(v[r][c]||'').trim().toLowerCase()==='customer id'){ hdr = r; break; }
+    }
+  }
+  if(hdr < 1) return null;
+  var monthRow = v[hdr] || [], groupRow = v[hdr-1] || [], yearRow = hdr>=2 ? (v[hdr-2] || []) : [];
+  function col(names){
+    for(var c=0;c<monthRow.length;c++){
+      var k = String(monthRow[c]||'').trim().toLowerCase();
+      if(names.indexOf(k)>=0) return c;
     }
     return -1;
   }
-  var mx7Start = groupStart('mx7');
-  var mxpStart = groupStart('mx pro');
-
-  // within a group, map each month name to its column, then read the totals row (row 4 = index 3)
-  var totRow = v[DATA_ROW-1] || [];
-  function readGroup(startCol, endCol, out){
-    if(startCol<0) return;
-    for(var c=startCol; c<endCol && c<monthRow.length; c++){
-      var mn = String(monthRow[c]||'').trim().toLowerCase();
-      var mi = MON.indexOf(mn);
-      if(mi>=0) out[mi] = Number(totRow[c]||0);
-    }
+  var starts = [];
+  for(var c=0;c<groupRow.length;c++){
+    var g = String(groupRow[c]||'').toLowerCase();
+    if(!g) continue;
+    var model = (g.indexOf('mx pro')>=0 || g.indexOf('mxp')>=0 || g.indexOf('mx22')>=0) ? 'mxp'
+              : (g.indexOf('mx7')>=0 ? 'mx7' : null);
+    if(model) starts.push({col:c, model:model});
   }
-  // MX7 group spans from mx7Start up to mxpStart (or a bit before). MX Pro spans from mxpStart onward.
-  readGroup(mx7Start, (mxpStart>mx7Start?mxpStart:mx7Start+13), sumMX7);
-  readGroup(mxpStart, monthRow.length, sumMXP);
+  var blocks = [];
+  for(var i=0;i<starts.length;i++){
+    var s = starts[i];
+    var end = (i+1<starts.length) ? starts[i+1].col : monthRow.length;
+    var year = null;
+    for(var yc=s.col; yc>=0; yc--){
+      var y = parseInt(yearRow[yc], 10);
+      if(y>=2000 && y<=2100){ year = String(y); break; }
+    }
+    if(!year) year = '2026';
+    var months = {}, totalCol = -1;
+    for(var mc=s.col; mc<end && mc<monthRow.length; mc++){
+      var hname = String(monthRow[mc]||'').trim().toLowerCase();
+      var mi = MON.indexOf(hname);
+      if(mi>=0 && months[mi]==null) months[mi] = mc;
+      else if(hname==='total' && totalCol<0) totalCol = mc;
+    }
+    blocks.push({year:year, model:s.model, months:months, totalCol:totalCol});
+  }
+  return {
+    hdr:hdr, totRow:hdr+1, dataRow:hdr+2, blocks:blocks,
+    idCol: col(['customer id']), nameCol: col(['customer','account / name','account']),
+    segCol: col(['segment']), stageCol: col(['stage']), tpCol: col(['target product'])
+  };
+}
+function zeros12_(){ return [0,0,0,0,0,0,0,0,0,0,0,0]; }
 
-  return {mx7:sumMX7, mxp:sumMXP};
+// Returns {mx7, mxp} for 2026 (backward compatible) plus
+// years: {'2026':{mx7,mxp}, '2027':{mx7,mxp,rows:[{id,name,segment,stage,target_product,mx7,mxp}]}}
+function readSummary_(){
+  var out = {mx7:zeros12_(), mxp:zeros12_(), years:{}, sheet:''};
+  var sSh = summarySheet_();
+  if(!sSh) return out;
+  out.sheet = sSh.getName();
+  var v = sSh.getDataRange().getValues();
+  var L = summaryLayout_(v);
+  if(!L) return out;
+  var tot = v[L.totRow] || [];
+  var firstYear = null;
+  L.blocks.forEach(function(b){
+    if(!firstYear) firstYear = b.year;
+    var y = out.years[b.year] = out.years[b.year] || {mx7:zeros12_(), mxp:zeros12_(), rows:{}};
+    for(var mi=0; mi<12; mi++){
+      var c = b.months[mi];
+      if(c==null) continue;
+      var t = tot[c], s = 0;
+      for(var r=L.dataRow; r<v.length; r++){
+        if(L.idCol>=0 && String(v[r][L.idCol]||'').trim()==='') continue;
+        s += Number(v[r][c]||0);
+      }
+      // the sheet's own totals row wins when it holds a number; otherwise sum the rows
+      y[b.model][mi] = (typeof t==='number') ? t : s;
+    }
+    if(b.year===firstYear) return;            // first-year rows come from Qty_Input
+    for(var r=L.dataRow; r<v.length; r++){
+      var id = L.idCol>=0 ? String(v[r][L.idCol]||'').trim() : '';
+      if(!id) continue;
+      var rec = y.rows[r] = y.rows[r] || {
+        id:id,
+        name: L.nameCol>=0 ? String(v[r][L.nameCol]||'').trim() : '',
+        segment: L.segCol>=0 ? v[r][L.segCol] : '',
+        stage: L.stageCol>=0 ? stageToApp_(v[r][L.stageCol]) : '',
+        target_product: L.tpCol>=0 ? v[r][L.tpCol] : '',
+        mx7:zeros12_(), mxp:zeros12_()
+      };
+      for(var m=0; m<12; m++){
+        var cc = b.months[m];
+        if(cc!=null) rec[b.model][m] = Number(v[r][cc]||0);
+      }
+    }
+  });
+  for(var yk in out.years){
+    var rowsObj = out.years[yk].rows, arr = [];
+    for(var rk in rowsObj) arr.push(rowsObj[rk]);
+    out.years[yk].rows = arr;
+  }
+  if(firstYear && out.years[firstYear]){
+    out.mx7 = out.years[firstYear].mx7;
+    out.mxp = out.years[firstYear].mxp;
+    out.years[firstYear].rows = [];
+  }
+  return out;
 }
 
 
@@ -1693,78 +1967,57 @@ function repairQSeq_(mSh, mMap){
   mSh.getRange(DATA_ROW, col, formulas.length, 1).setFormulas(formulas);
 }
 
-// Rebuild the Summary FCST monthly cells as formulas that read Qty_Input by
-// Customer ID. If anyone pastes static values over them, the sheet stops
-// updating - this restores the live link on every save.
-// Layout: row 2 = group labels (MX7 / MX Pro), row 3 = month names, row 4 =
-// totals row, data rows from 5. Columns A..F keep their own formulas.
+// Rebuild the Summary FCST monthly cells of the FIRST year block (2026) as
+// formulas that read Qty_Input by Customer ID. If anyone pastes static values
+// over them, the sheet stops updating - this restores the live link on every save.
+// Later year blocks (2027 BP) are typed by hand and are NEVER touched here.
+// Only rows whose Customer ID cell holds a formula are rewritten.
 function repairSummary_(){
-  var sSh = sheet_(SUMMARY_SHEET);
+  var sSh = summarySheet_();
   if(!sSh) return;
   var v = sSh.getDataRange().getValues();
-  if(v.length < 5) return;
-  var groupRow = v[1] || [];
-  var monthRow = v[2] || [];
-  var MON = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
-  var SUM_TOT_ROW = 4;             // row 4 = totals row (1-based)
-  var SUM_DATA_ROW = 5;            // data starts at row 5 (1-based)
+  var L = summaryLayout_(v);
+  if(!L || L.idCol<0 || !L.blocks.length) return;
+  var firstYear = L.blocks[0].year;
+  var SUM_TOT_ROW = L.totRow + 1;                // 1-based
+  var SUM_DATA_ROW = L.dataRow + 1;              // 1-based
   var lastRow = sSh.getLastRow();
   if(lastRow < SUM_DATA_ROW) return;
+  var idF = sSh.getRange(SUM_DATA_ROW, L.idCol+1, lastRow-SUM_DATA_ROW+1, 1).getFormulas();
+  var lastData = SUM_DATA_ROW - 1;
+  for(var i=0;i<idF.length;i++){ if(idF[i][0]) lastData = SUM_DATA_ROW + i; }
+  if(lastData < SUM_DATA_ROW) return;
+  var idL = columnLetter_(L.idCol+1);
 
-  function groupStart(label){
-    for(var c=0;c<groupRow.length;c++){
-      if(String(groupRow[c]||'').toLowerCase().indexOf(label)>=0) return c;
-    }
-    return -1;
-  }
-  // Collect month columns (0-based) for a group, in Jan..Dec order, plus its Total col.
-  function groupCols(startCol, endCol){
-    var months = {}; var totalCol = -1;
-    if(startCol<0) return {months:months, totalCol:totalCol};
-    for(var c=startCol; c<endCol && c<monthRow.length; c++){
-      var h = String(monthRow[c]||'').trim().toLowerCase();
-      var mi = MON.indexOf(h);
-      if(mi>=0) months[mi] = c;
-      else if(h==='total' && totalCol<0) totalCol = c;
-    }
-    return {months:months, totalCol:totalCol};
-  }
-  var mx7Start = groupStart('mx7');
-  var mxpStart = groupStart('mx pro');
-  var g7  = groupCols(mx7Start, (mxpStart>mx7Start?mxpStart:monthRow.length));
-  var gp  = groupCols(mxpStart, monthRow.length);
-
-  // QI: Qty_Input layout A=id, C..N = MX7 Jan..Dec, O..Z = MX Pro Jan..Dec
-  var QI_ROWS = '$4:$1000';
+  // Qty_Input layout: A=id, C..N = MX7 Jan..Dec, O..Z = MX Pro Jan..Dec
   function monthFormula(row, monthIdx, isMXP){
-    var block = isMXP ? 'Qty_Input!$O'+QI_ROWS.split(':')[0]+':$Z'+QI_ROWS.split(':')[1]
-                      : 'Qty_Input!$C'+QI_ROWS.split(':')[0]+':$N'+QI_ROWS.split(':')[1];
-    return '=IF($A'+row+'="","",IFERROR(INDEX('+block+',MATCH($A'+row+',Qty_Input!$A'+QI_ROWS.split(':')[0]+':$A'+QI_ROWS.split(':')[1]+',0),'+(monthIdx+1)+'),0))';
+    var block = isMXP ? 'Qty_Input!$O$4:$Z$1000' : 'Qty_Input!$C$4:$N$1000';
+    return '=IF($'+idL+row+'="","",IFERROR(INDEX('+block+',MATCH($'+idL+row+',Qty_Input!$A$4:$A$1000,0),'+(monthIdx+1)+'),0))';
   }
   function writeGroup(g, isMXP){
+    if(g.months[0]==null || g.months[11]==null) return;
     for(var mi=0; mi<12; mi++){
       var c0 = g.months[mi];
       if(c0==null) continue;
       var colFormulas = [];
-      for(var r=SUM_DATA_ROW; r<=lastRow; r++) colFormulas.push([monthFormula(r, mi, isMXP)]);
+      for(var r=SUM_DATA_ROW; r<=lastData; r++) colFormulas.push([monthFormula(r, mi, isMXP)]);
       sSh.getRange(SUM_DATA_ROW, c0+1, colFormulas.length, 1).setFormulas(colFormulas);
-      // totals row for this month
       var colL = columnLetter_(c0+1);
-      sSh.getRange(SUM_TOT_ROW, c0+1).setFormula('=SUM('+colL+SUM_DATA_ROW+':'+colL+lastRow+')');
+      sSh.getRange(SUM_TOT_ROW, c0+1).setFormula('=SUM('+colL+SUM_DATA_ROW+':'+colL+lastData+')');
     }
     if(g.totalCol!=null && g.totalCol>=0){
-      // per-row Total = sum of the 12 month cells in that row
       var first = columnLetter_(g.months[0]+1), last = columnLetter_(g.months[11]+1);
       var totFormulas = [];
-      for(var r=SUM_DATA_ROW; r<=lastRow; r++)
-        totFormulas.push(['=IF($A'+r+'="","",SUM('+first+r+':'+last+r+'))']);
+      for(var r=SUM_DATA_ROW; r<=lastData; r++)
+        totFormulas.push(['=IF($'+idL+r+'="","",SUM('+first+r+':'+last+r+'))']);
       sSh.getRange(SUM_DATA_ROW, g.totalCol+1, totFormulas.length, 1).setFormulas(totFormulas);
       var tL = columnLetter_(g.totalCol+1);
-      sSh.getRange(SUM_TOT_ROW, g.totalCol+1).setFormula('=SUM('+tL+SUM_DATA_ROW+':'+tL+lastRow+')');
+      sSh.getRange(SUM_TOT_ROW, g.totalCol+1).setFormula('=SUM('+tL+SUM_DATA_ROW+':'+tL+lastData+')');
     }
   }
-  if(mx7Start>=0 && g7.months[0]!=null && g7.months[11]!=null) writeGroup(g7, false);
-  if(mxpStart>=0 && gp.months[0]!=null && gp.months[11]!=null) writeGroup(gp, true);
+  L.blocks.forEach(function(b){
+    if(b.year===firstYear) writeGroup(b, b.model==='mxp');
+  });
 }
 function columnLetter_(n){
   var s='';
@@ -1828,7 +2081,9 @@ function viewData(){
     ${STATE.syncInfo ? `<div class="sync-diag ${STATE.syncInfo.hasSummary?'ok':'warn'}">
       Last pull ${STATE.syncInfo.at} · ${STATE.syncInfo.rows} records ·
       ${STATE.syncInfo.hasSummary
-        ? `Summary FCST read ✓ — MX7 <b>${fmt(STATE.syncInfo.mx7)}</b> / MX Pro <b>${fmt(STATE.syncInfo.mxp)}</b>`
+        ? `Summary FCST read ✓ — MX7 <b>${fmt(STATE.syncInfo.mx7)}</b> / MX Pro <b>${fmt(STATE.syncInfo.mxp)}</b>${
+            STATE.syncInfo.bp27 ? ` · 2027 BP MX7 <b>${fmt(STATE.syncInfo.bp27.mx7)}</b> / MX Pro <b>${fmt(STATE.syncInfo.bp27.mxp)}</b>`
+            : (STATE.syncInfo.hasYears ? ' · 2027 block not found in the sheet' : ' · ⚠ 2027 not returned — re-deploy the v15.3 Apps Script')}`
         : `⚠ No Summary FCST returned — the Apps Script is an older version. Re-copy the code below and re-deploy (New version).`}
     </div>` : ''}
     <p style="font-size:12.5px;color:var(--ink-2);margin-bottom:14px">
@@ -1956,8 +2211,9 @@ function exportExcel(){
 }
 
 /* Export FCST view as-is — MX7 / MX Pro sheets, segment groups + customer monthly + Total/BP/DM */
-function exportFcstExcel(){
+function exportFcstExcel(year){
   if(typeof XLSX==='undefined'||!XLSX.utils){ toast('Could not load the Excel module (check your network)','err'); return; }
+  if(year && year!=='2026') return exportPlanExcel(year);
   const wb=XLSX.utils.book_new();
   ['MX7','MX Pro'].forEach(model=>{
     const bp = model==='MX7'?BP_MX7:BP_MX22;
@@ -1987,6 +2243,23 @@ function exportFcstExcel(){
   });
   XLSX.writeFile(wb,`Humax_B2B_FCST_${today()}.xlsx`);
   toast('FCST downloaded','ok');
+}
+/* Export a plan year (2027 BP) as shown in the FCST view */
+function exportPlanExcel(year){
+  if(!planOf(year)){ toast('No '+year+' data loaded','warn'); return; }
+  const wb=XLSX.utils.book_new();
+  ['MX7','MX Pro'].forEach(model=>{
+    const rows=planRows(year, model);
+    const aoa=[['Customer ID','Account','Segment','Stage',...MONTHS,'Total']];
+    rows.forEach(r=>aoa.push([r.id,r.name,r.segment,(STAGE_MAP[r.stage]||STAGE_MAP.suspect).name,...r.months.map(num),sum(r.months)]));
+    const t=planMonthly(year, model);
+    aoa.push(['',year+' BP total','','',...t,sum(t)]);
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols']=[{wch:10},{wch:28},{wch:16},{wch:13},...MONTHS.map(()=>({wch:6})),{wch:8}];
+    XLSX.utils.book_append_sheet(wb,ws,model);
+  });
+  XLSX.writeFile(wb,`Humax_B2B_BP_${year}_${today()}.xlsx`);
+  toast(year+' BP downloaded','ok');
 }
 function importFile(ev){
   const f=ev.target.files[0]; if(!f)return;

@@ -677,7 +677,7 @@ function SalesTab({user,year}){
                 h("td",null, r.c, h("span",{style:{marginLeft:8,fontSize:10,color:"var(--muted)",fontWeight:400}}, r.ch)),
                 MONTHS.map((_,i)=>h("td",{key:i})), h("td",null)),
               line("BP",pv(r,"bp"),"bp"),
-              line("FCST",pv(r,"fc"),"fc"),
+              line("FCST (DM)",pv(r,"fc"),"fc"),
               line("Actual",pv(r,"ac"),"ac"),
             ]),
             // channel total (Actual)

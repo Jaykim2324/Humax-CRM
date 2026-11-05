@@ -975,10 +975,7 @@ function FcstTab({user,year}){
                 h("span",{className:"badge",style:{marginLeft:8,background:"var(--good-bg)",color:"var(--good)",borderColor:"var(--good)"}}, d.stage)),
               win.map(i=>{
                 const locked=monthLocked(i)||!editable, v=marr(d)[i]||0;
-                const mlabel=h("div",{style:{fontSize:9,fontWeight:700,color:i===m0?"var(--azure)":"var(--muted)",
-                  textTransform:"uppercase",letterSpacing:".04em",marginBottom:3}}, MONTHS[i].slice(0,3));
                 return h("td",{key:i,className:"tnum",style:{textAlign:"center",padding:"4px 6px",verticalAlign:"top"}},
-                  mlabel,
                   locked
                     ? h("span",{style:{color:"var(--muted)",display:"inline-block",padding:"5px 0"}}, fmt(v))
                     : h("input",{type:"number",min:0,value:v,
@@ -993,8 +990,7 @@ function FcstTab({user,year}){
               "No FCST or Live deals in this channel yet — move a deal to FCST or Live in the Pipeline tab.")),
             base.length? h("tr",{className:"tot"},
               h("td",null,"Total"),
-              win.map(i=>h("td",{key:i,className:"tnum",style:{textAlign:"center"}},
-                h("span",{style:{fontSize:9,fontWeight:700,opacity:.7,marginRight:5}}, MONTHS[i].slice(0,3)), fmt(colTot(i)))),
+              win.map(i=>h("td",{key:i,className:"tnum",style:{textAlign:"center"}}, fmt(colTot(i)))),
               h("td",{className:"tnum",style:{textAlign:"right"}}, fmt(winUnits))):null
           )))
     ),

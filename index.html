@@ -169,7 +169,7 @@ const h = React.createElement;
 
 /* ============================== CONFIG ============================== */
 const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION="v1.8 · 2026-11-17"; // bump on each deploy so you can confirm the live build
+const APP_VERSION="v1.9 · 2026-11-17"; // bump on each deploy so you can confirm the live build
 const CHANNELS=["Retail","Automotive","Installer/Reseller","eCommerce"];
 const OWNER={Retail:"Simon",Automotive:"Matthew","Installer/Reseller":"Niall",eCommerce:"Sabby"};
 const SEGMENTS=["Retail Home","Retail Commercial","Automotive","Installer/Reseller","eCommerce"];
@@ -358,6 +358,53 @@ const SALES_BY_YEAR = {}; // {2025:[...customers], 2026:[...], ...} filled at bo
 function custFor(year){
   const y = SALES_BY_YEAR[year] || SALES_BY_YEAR[String(year)];
   return (y && y.length) ? y : SAMPLE.customers;
+}
+
+/* ---- Weekly actuals store (Manager enters Actual week by week per customer) ----
+   WEEKLY[year] = [{c, ch, product:'mx7'|'mxpro', we:'yyyy-MM-dd'(Sunday), units}] */
+const WEEKLY = {};
+let WEEKLY_VER=0; const weeklySubs=new Set();
+function bumpWeekly(){ WEEKLY_VER++; weeklySubs.forEach(fn=>fn(WEEKLY_VER)); }
+function useWeekly(){ const [,set]=useState(WEEKLY_VER);
+  useEffect(()=>{ weeklySubs.add(set); return ()=>weeklySubs.delete(set); },[]);
+  return WEEKLY; }
+const pad2=n=>String(n).padStart(2,"0");
+const ymd=d=>d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());
+// the week-ending Sundays that fall inside (year, monthIdx0). Weeks are Mon–Sun;
+// a week belongs to the month its Sunday lands in. Returns [{we, label, start}].
+function weeksOfMonth(year,m){
+  const first=new Date(year,m,1), last=new Date(year,m+1,0);
+  const weeks=[]; let d=new Date(first);
+  // walk day by day; every Sunday in the month closes a week
+  for(; d<=last; d.setDate(d.getDate()+1)){
+    if(d.getDay()===0){ // Sunday
+      const sun=new Date(d), mon=new Date(d); mon.setDate(mon.getDate()-6);
+      weeks.push({we:ymd(sun), start:ymd(mon),
+        label:"Wk ending "+pad2(sun.getDate())+" "+MONTHS[sun.getMonth()]});
+    }
+  }
+  // if the month ends mid-week (last day not a Sunday), add a final partial week
+  if(last.getDay()!==0){
+    const sun=new Date(last); // use month-end as the closing date of the partial week
+    const mon=new Date(last); mon.setDate(mon.getDate()-last.getDay()+1);
+    weeks.push({we:ymd(sun), start:ymd(mon),
+      label:"Wk ending "+pad2(sun.getDate())+" "+MONTHS[sun.getMonth()]+" (partial)"});
+  }
+  return weeks;
+}
+function weeklyUnits(year,c,ch,product,we){
+  const list=WEEKLY[String(year)]||[];
+  const row=list.find(r=>r.c===c&&r.ch===ch&&r.product===product&&r.we===we);
+  return row?row.units:0;
+}
+function setWeeklyUnits(year,c,ch,product,we,units){
+  const yr=String(year); if(!WEEKLY[yr]) WEEKLY[yr]=[];
+  const list=WEEKLY[yr];
+  const i=list.findIndex(r=>r.c===c&&r.ch===ch&&r.product===product&&r.we===we);
+  const u=Math.max(0,Math.round(+units)||0);
+  if(i>=0){ if(u===0) list.splice(i,1); else list[i].units=u; }
+  else if(u>0) list.push({c,ch,product,we,units:u});
+  bumpWeekly();
 }
 let PIPE_VER=0;
 const pipeSubs=new Set();
@@ -597,12 +644,113 @@ function TileAch({l,act,tgt,kind}){
 }
 
 /* ============================== SALES ============================== */
+/* Manager-only weekly Actual entry: pick a month → weeks of that month →
+   per-customer × week grid of unit inputs → Save writes to the Sheet (Sales_Weekly). */
+function WeeklyEntry({user,year}){
+  useWeekly();
+  const [emonth,setEmonth]=useState(CUR_MONTH);
+  const [eprod,setEprod]=useState("MX7");           // enter one product at a time (MX7 / MX Pro)
+  const [efilter,setEfilter]=useState("all");       // channel filter for the entry grid
+  const [dirty,setDirty]=useState(0);
+  const [saving,setSaving]=useState(false);
+  const pkey = eprod==="MX Pro" ? "mxpro" : "mx7";
+  const weeks = weeksOfMonth(year, emonth);
+  // customer list for entry: existing sales customers + any already in weekly for this year
+  const base = custFor(year).map(r=>({c:r.c,ch:r.ch}));
+  const wkYear = WEEKLY[String(year)]||[];
+  wkYear.forEach(w=>{ if(!base.some(b=>b.c===w.c&&b.ch===w.ch)) base.push({c:w.c,ch:w.ch}); });
+  const custs = base
+    .filter(r=> efilter==="all" || r.ch===efilter)
+    .sort((a,b)=> a.ch===b.ch ? a.c.localeCompare(b.c) : CHANNELS.indexOf(a.ch)-CHANNELS.indexOf(b.ch));
+  // ad-hoc new customers added during this session (appear in the grid so you can type their actuals)
+  const [extra,setExtra]=useState([]);
+  extra.forEach(e=>{ if(!custs.some(r=>r.c===e.c&&r.ch===e.ch)) custs.push(e); });
+  const [nc,setNc]=useState({c:"",ch:CHANNELS[0]});
+  const addCust=()=>{ const name=nc.c.trim(); if(!name) return;
+    if(!custs.some(b=>b.c===name&&b.ch===nc.ch)) setExtra(x=>x.concat([{c:name,ch:nc.ch}]));
+    setNc({c:"",ch:nc.ch}); };
+
+  const monthTotal = custs.reduce((s,r)=> s + weeks.reduce((a,w)=>a+weeklyUnits(year,r.c,r.ch,pkey,w.we),0), 0);
+
+  const save=async ()=>{
+    setSaving(true);
+    // build rows for this product across the shown weeks (all customers, so zeros clear removed entries)
+    const rows=[];
+    custs.forEach(r=> weeks.forEach(w=>{
+      rows.push({year:String(year), c:r.c, ch:r.ch, product:pkey, we:w.we, units:weeklyUnits(year,r.c,r.ch,pkey,w.we)});
+    }));
+    const res=await pushToSheet("weekly",{rows});
+    setSaving(false);
+    alert(res.ok ? ("Saved weekly actuals for "+MONTHS[emonth]+" "+year+" ("+eprod+").")
+                 : ("Saved locally.\n\n"+(res.demo?"Demo mode — set LIVE=true to write to the Sheet.":"Sheet write failed: "+(res.error||"unknown"))));
+    setDirty(0);
+  };
+
+  return h("div",{className:"card",style:{marginBottom:16,borderColor:"var(--azure)"}},
+    h("div",{style:{padding:"13px 16px",display:"flex",flexWrap:"wrap",gap:10,alignItems:"center"}},
+      h("div",null,
+        h("h3",{style:{margin:0}},"Weekly actuals entry"),
+        h("div",{className:"csub",style:{margin:0}},"Enter Actual units by customer, week by week. Weeks roll up into the month total. "+eprod+" · "+MONTHS[emonth]+" "+year)),
+      h("div",{style:{marginLeft:"auto",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}},
+        h("select",{value:emonth,onChange:e=>setEmonth(+e.target.value)},
+          MONTHS.map((mm,i)=>h("option",{key:i,value:i}, mm+" "+year))),
+        h("select",{value:efilter,onChange:e=>setEfilter(e.target.value)},
+          h("option",{value:"all"},"All segments"),
+          CHANNELS.map(c=>h("option",{key:c,value:c}, c))),
+        h("div",{className:"seg"},
+          h("button",{className:eprod==="MX7"?"on":"",onClick:()=>setEprod("MX7")},"MX7"),
+          h("button",{className:eprod==="MX Pro"?"on":"",onClick:()=>setEprod("MX Pro")},"MX Pro")),
+        dirty? h("span",{className:"badge",style:{background:"var(--warn-bg)",color:"var(--warn)",borderColor:"var(--warn)"}}, dirty+" unsaved"):null,
+        h("button",{className:"go",style:{width:"auto",padding:"9px 18px",fontSize:12.5,opacity:saving?.6:1},
+          onClick:saving?undefined:save}, saving?"Saving…":"Save to Sheet"))),
+    h("div",{className:"tbl-wrap"},
+      h("table",null,
+        h("thead",null,h("tr",null,
+          h("th",{style:{position:"sticky",left:0,background:"var(--surface)",zIndex:2,minWidth:170}},"Customer"),
+          h("th",null,"Segment"),
+          weeks.map((w,k)=>h("th",{key:k,style:{textAlign:"center",minWidth:92,fontSize:10.5,lineHeight:1.25,whiteSpace:"nowrap"}}, w.label)),
+          h("th",{style:{textAlign:"right"}},"Month"))),
+        h("tbody",null,
+          custs.length? custs.map((r,ri)=>{
+            const rowTot=weeks.reduce((a,w)=>a+weeklyUnits(year,r.c,r.ch,pkey,w.we),0);
+            return h("tr",{key:ri},
+              h("td",{style:{position:"sticky",left:0,background:"var(--surface)",zIndex:1,whiteSpace:"nowrap"}}, r.c),
+              h("td",{style:{fontSize:11,color:"var(--muted)",whiteSpace:"nowrap"}}, r.ch),
+              weeks.map((w,k)=>{
+                const v=weeklyUnits(year,r.c,r.ch,pkey,w.we);
+                return h("td",{key:k,style:{padding:"3px 4px",textAlign:"center"}},
+                  h("input",{type:"number",min:0,value:v||"",
+                    onChange:e=>{ setWeeklyUnits(year,r.c,r.ch,pkey,w.we,e.target.value); setDirty(x=>x+1); },
+                    style:{width:58,textAlign:"right",padding:"5px 6px",border:"1px solid var(--line-strong)",
+                      borderRadius:6,background:"var(--surface)",color:"var(--ink)",font:"inherit",fontSize:12,fontVariantNumeric:"tabular-nums"}}));
+              }),
+              h("td",{className:"tnum",style:{textAlign:"right",fontWeight:700}}, rowTot||"–"));
+          }) : h("tr",null,h("td",{colSpan:weeks.length+3,style:{padding:"18px",textAlign:"center",color:"var(--muted)"}},"No customers in scope — add one below.")),
+          h("tr",{className:"tot"},
+            h("td",{style:{position:"sticky",left:0,background:"var(--sun)",zIndex:1}},"Total "+eprod),
+            h("td",null,""),
+            weeks.map((w,k)=>h("td",{key:k,className:"tnum",style:{textAlign:"center"}},
+              custs.reduce((a,r)=>a+weeklyUnits(year,r.c,r.ch,pkey,w.we),0)||"–")),
+            h("td",{className:"tnum",style:{textAlign:"right"}}, monthTotal||"–"))
+        ))),
+    h("div",{style:{padding:"10px 16px",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",borderTop:"1px solid var(--line)"}},
+      h("span",{style:{fontSize:12,color:"var(--muted)"}},"Add customer:"),
+      h("input",{type:"text",value:nc.c,placeholder:"Customer name",onChange:e=>setNc({...nc,c:e.target.value}),
+        onKeyDown:e=>{if(e.key==="Enter")addCust();},
+        style:{padding:"7px 10px",border:"1px solid var(--line-strong)",borderRadius:7,background:"var(--surface)",color:"var(--ink)",font:"inherit",width:180}}),
+      h("select",{value:nc.ch,onChange:e=>setNc({...nc,ch:e.target.value})}, CHANNELS.map(c=>h("option",{key:c,value:c},c))),
+      h("button",{className:"go",style:{width:"auto",padding:"7px 14px",fontSize:12},onClick:addCust},"Add"),
+      h("span",{style:{marginLeft:"auto",fontSize:11.5,color:"var(--muted)"}},"Enter one product at a time (MX7 / MX Pro). Saving writes every shown cell, so clearing a cell to 0 removes it."))
+  );
+}
+
 function SalesTab({user,year}){
   const role=user.role, channel=user.channel;
   const [selM,setSelM]=useState(CUR_MONTH);
   const [chFilter,setChFilter]=useState(role==="rep"?channel:"all");
   const [unit,setUnit]=useState("units"); // units | value
   const [prod,setProd]=useState("All"); // All | MX7 | MX Pro
+  useWeekly(); // re-render when weekly actuals change
   const all=custFor(year);
   // product-filtered view of each customer's bp/fc/ac
   const pv=(r,f)=> prod==="All" ? r[f] : splitByProduct(r[f], r.ch)[PKEY[prod]];
@@ -628,6 +776,8 @@ function SalesTab({user,year}){
   );
 
   return h("div",null,
+    // Manager-only: weekly Actual entry (writes to Sheet, rolls up into the summary below)
+    role==="manager" ? h(WeeklyEntry,{user,year}) : null,
     h("div",{className:"toolbar"},
       role!=="rep" ? h("select",{value:chFilter,onChange:e=>setChFilter(e.target.value)},
         h("option",{value:"all"},"All channels"),
@@ -1677,6 +1827,15 @@ async function boot(){
       // backward-compat: a flat array is treated as the current year
       SALES_BY_YEAR[String(CUR_YEAR)] = data.sales.map(r=>({c:r.c,ch:r.ch,
         bp:r.bp||Array(12).fill(0), fc:r.fc||Array(12).fill(0), ac:r.ac||Array(12).fill(0)}));
+    }
+
+    // --- Weekly actuals (Sales_Weekly tab → WEEKLY[year] rows) ---
+    if(data.weekly && typeof data.weekly==="object"){
+      Object.keys(WEEKLY).forEach(k=>delete WEEKLY[k]);
+      Object.entries(data.weekly).forEach(([yr,rows])=>{
+        if(Array.isArray(rows)) WEEKLY[yr]=rows.map(w=>({c:w.c,ch:w.ch,product:w.product||"mx7",we:w.we,units:+w.units||0}));
+      });
+      bumpWeekly();
     }
   }catch(err){
     // network/JSON failure → keep sample data, let the user know once

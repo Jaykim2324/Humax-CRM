@@ -169,7 +169,7 @@ const h = React.createElement;
 
 /* ============================== CONFIG ============================== */
 const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION="v1.4 · 2026-11-17"; // bump on each deploy so you can confirm the live build
+const APP_VERSION="v1.8 · 2026-11-17"; // bump on each deploy so you can confirm the live build
 const CHANNELS=["Retail","Automotive","Installer/Reseller","eCommerce"];
 const OWNER={Retail:"Simon",Automotive:"Matthew","Installer/Reseller":"Niall",eCommerce:"Sabby"};
 const SEGMENTS=["Retail Home","Retail Commercial","Automotive","Installer/Reseller","eCommerce"];
@@ -215,7 +215,8 @@ const USERS=[
   {pin:"4444", name:"Sabby",   role:"rep", channel:"eCommerce"},
 ];
 const PRICE_BLENDED=384; // £ per unit (from Settings; placeholder)
-const CUR_YEAR=2026, CUR_MONTH=9; // Oct (0-idx) — demo "today"
+const _NOW=new Date();
+const CUR_YEAR=_NOW.getFullYear(), CUR_MONTH=_NOW.getMonth(); // real "today" (0-idx month)
 
 /* ============================== LIVE DATA CONNECTION ==============================
    The console runs on SAMPLE data until this is wired to the Google Sheet.
@@ -427,6 +428,12 @@ function Dashboard({year,setYear,user}){
     .map(r=>({c:r.c, ch:r.ch, bp:(r.bp[m]||0), fc:(r.fc[m]||0), ac:(r.ac[m]||0)}))
     .sort((a,b)=>b.ac-a.ac);
   const mcTot={bp:monthCust.reduce((a,r)=>a+r.bp,0), fc:monthCust.reduce((a,r)=>a+r.fc,0), ac:monthCust.reduce((a,r)=>a+r.ac,0)};
+  // group customers under their segment; achievement (vs BP) is shown at segment level, not per customer
+  const monthSegs = (role==="rep"?[channel]:CHANNELS)
+    .map(seg=>{ const rows=monthCust.filter(r=>r.ch===seg);
+      return {seg, rows,
+        bp:rows.reduce((a,r)=>a+r.bp,0), fc:rows.reduce((a,r)=>a+r.fc,0), ac:rows.reduce((a,r)=>a+r.ac,0)}; })
+    .filter(s=>s.rows.length || s.bp>0);
 
   // chart max
   const tMax=Math.max(1,...MONTHS.map((_,i)=>Math.max(bp[i],dm[i],ac[i])));
@@ -504,28 +511,37 @@ function Dashboard({year,setYear,user}){
     // two-col: this-week by customer + EV monthly chart
     h("div",{className:"grid",style:{gridTemplateColumns:"1fr",marginTop:14}},
       h("div",{className:"card"},
-        h("h3",null, MONTHS[m]+" "+year+" — by customer"),
-        h("div",{className:"csub"},"BP / FCST / Actual for the selected month"+(role==="rep"?" · "+channel:"")+" · sorted by Actual"),
+        h("h3",null, MONTHS[m]+" "+year+" — by segment & customer"),
+        h("div",{className:"csub"},"BP / FCST / Actual for the selected month"+(role==="rep"?" · "+channel:"")+" · vs BP shown per segment"),
         h("div",{className:"tbl-wrap"},
           h("table",null,
             h("thead",null,h("tr",null,
-              h("th",null,"Customer"),
-              role!=="rep"?h("th",null,"Segment"):null,
+              h("th",null,"Segment / Customer"),
               h("th",{style:{textAlign:"right"}},"BP"),
               h("th",{style:{textAlign:"right"}},"FCST"),
               h("th",{style:{textAlign:"right"}},"Actual"),
               h("th",{style:{textAlign:"right"}},"vs BP"))),
             h("tbody",null,
-              monthCust.length? monthCust.map((r,i)=>h("tr",{key:i},
-                h("td",null,r.c),
-                role!=="rep"?h("td",{style:{fontSize:12,color:"var(--muted)"}},r.ch):null,
-                h("td",{className:"tnum",style:{textAlign:"right",color:"var(--muted)"}}, Math.round(r.bp).toLocaleString()),
-                h("td",{className:"tnum",style:{textAlign:"right",color:"var(--blue)"}}, Math.round(r.fc).toLocaleString()),
-                h("td",{className:"tnum",style:{textAlign:"right",fontWeight:600}}, Math.round(r.ac).toLocaleString()),
-                h("td",{className:"tnum",style:{textAlign:"right",fontWeight:600,color:pct(r.ac,r.bp)>=100?"var(--good)":"var(--bad)"}}, pct(r.ac,r.bp)+"%")))
-                : h("tr",null,h("td",{colSpan:role!=="rep"?6:5,className:"muted",style:{textAlign:"center",padding:"18px"}},"No customer data for "+MONTHS[m])),
+              monthSegs.length? [].concat(...monthSegs.map((s,si)=>[
+                // segment subtotal row (achievement here)
+                h("tr",{key:"seg"+si,style:{background:"var(--blue-pale,#eef3fb)"}},
+                  h("td",{style:{fontWeight:700}}, s.seg),
+                  h("td",{className:"tnum",style:{textAlign:"right",fontWeight:700}}, Math.round(s.bp).toLocaleString()),
+                  h("td",{className:"tnum",style:{textAlign:"right",fontWeight:700,color:"var(--blue)"}}, Math.round(s.fc).toLocaleString()),
+                  h("td",{className:"tnum",style:{textAlign:"right",fontWeight:700}}, Math.round(s.ac).toLocaleString()),
+                  h("td",{className:"tnum",style:{textAlign:"right",fontWeight:700,color:pct(s.ac,s.bp)>=100?"var(--good)":"var(--bad)"}}, pct(s.ac,s.bp)+"%"))
+                ].concat(s.rows.sort((a,b)=>b.ac-a.ac).map((r,i)=>
+                  // customer detail rows (no vs BP — rolls up to segment)
+                  h("tr",{key:"seg"+si+"c"+i},
+                    h("td",{style:{paddingLeft:24,color:"var(--muted)"}}, r.c),
+                    h("td",{className:"tnum",style:{textAlign:"right",color:"var(--muted)"}}, Math.round(r.bp).toLocaleString()),
+                    h("td",{className:"tnum",style:{textAlign:"right",color:"var(--blue)"}}, Math.round(r.fc).toLocaleString()),
+                    h("td",{className:"tnum",style:{textAlign:"right",fontWeight:600}}, Math.round(r.ac).toLocaleString()),
+                    h("td",{className:"tnum",style:{textAlign:"right",color:"var(--muted)"}}, "—"))
+                ))))
+                : [h("tr",{key:"empty"},h("td",{colSpan:5,className:"muted",style:{textAlign:"center",padding:"18px"}},"No customer data for "+MONTHS[m]))],
               h("tr",{className:"tot"},
-                h("td",{colSpan:role!=="rep"?2:1},"Total "+MONTHS[m]),
+                h("td",null,"Total "+MONTHS[m]),
                 h("td",{className:"tnum",style:{textAlign:"right"}}, Math.round(mcTot.bp).toLocaleString()),
                 h("td",{className:"tnum",style:{textAlign:"right"}}, Math.round(mcTot.fc).toLocaleString()),
                 h("td",{className:"tnum",style:{textAlign:"right"}}, Math.round(mcTot.ac).toLocaleString()),
@@ -615,7 +631,7 @@ function SalesTab({user,year}){
     h("div",{className:"toolbar"},
       role!=="rep" ? h("select",{value:chFilter,onChange:e=>setChFilter(e.target.value)},
         h("option",{value:"all"},"All channels"),
-        CHANNELS.map(c=>h("option",{key:c,value:c}, c+" · "+OWNER[c]))) : null,
+        CHANNELS.map(c=>h("option",{key:c,value:c}, c))) : null,
       h("select",{value:selM,onChange:e=>setSelM(+e.target.value)},
         MONTHS.map((mm,i)=>h("option",{key:i,value:i}, mm+" "+year))),
       ProdToggle(prod,setProd),
@@ -723,14 +739,18 @@ function PipelineTab({user,year}){
   const rev = u => gbpK(u*price);
   const fmt = u => unit==="value" ? gbpK(u*price) : u.toLocaleString();
   const m0=CUR_MONTH;
+  // rolling 3-month window from "today", wrapping the year boundary (Nov/Dec → Jan)
+  const win3=[0,1,2].map(d=>({ mi:(m0+d)%12, yr:year+Math.floor((m0+d)/12), pos:d }));
+  const inWin3=(i)=> win3.some(w=>w.mi===i);
 
   // segments shown (channels in scope)
   const segs = role==="rep" ? [channel] : (chFilter==="all"? CHANNELS : [chFilter]);
-  // matrix: segment(row) × status(col) → annual units
-  const cell=(seg,st)=> scoped.filter(d=>d.ch===seg&&d.stage===st).reduce((a,d)=>a+annual(d),0);
-  const colTot=(st)=> segs.reduce((a,seg)=>a+cell(seg,st),0);
-  const rowTot=(seg)=> STAGES.reduce((a,st)=>a+cell(seg,st),0);
-  const grand = segs.reduce((a,seg)=>a+rowTot(seg),0);
+  // matrix: segment(row) × status(col) → number of customers (deals) in that stage.
+  // counts are distinct customers so a deal split into mx7+mxpro rows isn't double-counted.
+  const cell=(seg,st)=> new Set(scoped.filter(d=>d.ch===seg&&d.stage===st).map(d=>d.c)).size;
+  const colTot=(st)=> new Set(scoped.filter(d=>segs.includes(d.ch)&&d.stage===st).map(d=>d.c)).size;
+  const rowTot=(seg)=> new Set(scoped.filter(d=>d.ch===seg).map(d=>d.c)).size;
+  const grand = new Set(scoped.filter(d=>segs.includes(d.ch)).map(d=>d.c)).size;
 
   const deals=scoped.filter(d=> stageFilter==="all"||d.stage===stageFilter)
     .slice().sort((a,b)=>STAGES.indexOf(b.stage)-STAGES.indexOf(a.stage));
@@ -745,6 +765,12 @@ function PipelineTab({user,year}){
                : ("Saved "+dirty+" change(s) locally.\n\n"+(r.demo?"Demo mode — set LIVE=true and paste the Web App URL to write to the Sheet.":"Sheet write failed: "+(r.error||"unknown"))));
     setDirty(0);
   };
+
+  // ---- inline edit of a deal's status & channel (click the customer name) ----
+  const [editKey,setEditKey]=useState(null); // d.c+"|"+d.ch identifying the row being edited
+  const dealKey=(d)=>d.c+"|"+d.ch;
+  const setDealStage=(d,v)=>{ d.stage=v; setDirty(x=>x+1); bumpPipe(); };
+  const setDealChan=(d,v)=>{ d.ch=v; setDirty(x=>x+1); bumpPipe(); setEditKey(d.c+"|"+v); };
 
   // ---- new-customer entry ----
   const [showAdd,setShowAdd]=useState(false);
@@ -764,7 +790,7 @@ function PipelineTab({user,year}){
     h("div",{className:"toolbar"},
       role!=="rep" ? h("select",{value:chFilter,onChange:e=>setChFilter(e.target.value)},
         h("option",{value:"all"},"All segments"),
-        CHANNELS.map(c=>h("option",{key:c,value:c}, c+" · "+OWNER[c]))) : null,
+        CHANNELS.map(c=>h("option",{key:c,value:c}, c))) : null,
       h("select",{value:stageFilter,onChange:e=>setStageFilter(e.target.value)},
         h("option",{value:"all"},"All statuses"),
         STAGES.map(s=>h("option",{key:s,value:s}, s))),
@@ -792,9 +818,9 @@ function PipelineTab({user,year}){
             onChange:e=>setNc({...nc,c:e.target.value}), onKeyDown:e=>{if(e.key==="Enter")addDeal()},
             style:{width:"100%",padding:"9px 11px",border:"1px solid var(--line-strong)",borderRadius:8,background:"var(--surface)",color:"var(--ink)",font:"inherit"}})),
         role!=="rep"? h("div",{style:{flex:"1 1 180px"}},
-          h("div",{className:"flbl"},"Channel / rep"),
+          h("div",{className:"flbl"},"Channel / segment"),
           h("select",{value:nc.ch,onChange:e=>setNc({...nc,ch:e.target.value}),style:{width:"100%"}},
-            CHANNELS.map(c=>h("option",{key:c,value:c}, c+" · "+OWNER[c])))) : null,
+            CHANNELS.map(c=>h("option",{key:c,value:c}, c)))) : null,
         h("div",{style:{flex:"1 1 150px"}},
           h("div",{className:"flbl"},"Status (stage)"),
           h("select",{value:nc.stage,onChange:e=>setNc({...nc,stage:e.target.value}),style:{width:"100%"}},
@@ -810,24 +836,24 @@ function PipelineTab({user,year}){
     h("div",{className:"card",style:{padding:0,overflow:"hidden",marginBottom:14}},
       h("div",{style:{padding:"13px 16px"}},
         h("h3",null,"Pipeline composition — segment × status"),
-        h("div",{className:"csub",style:{margin:0}}, scopeLabel+" · annual expected "+(unit==="value"?"revenue":"units")+" by stage · FCST and Live are likely-PO")),
+        h("div",{className:"csub",style:{margin:0}}, scopeLabel+" · number of customers at each stage · FCST and Live are likely-PO")),
       h("div",{className:"tbl-wrap"},
         h("table",null,
           h("thead",null,h("tr",null,
             h("th",null,"Segment"),
             STAGES.map(s=>h("th",{key:s,style:{textAlign:"right",color:STAGE_COLOR[s]}}, s)),
-            h("th",{style:{textAlign:"right"}},"Annual total"))),
+            h("th",{style:{textAlign:"right"}},"Customers"))),
           h("tbody",null,
             segs.map(seg=>h("tr",{key:seg},
               h("td",null, seg),
               STAGES.map(s=>{ const v=cell(seg,s); const likely=LIKELY.includes(s);
                 return h("td",{key:s,className:"tnum",style:{textAlign:"right",fontWeight:likely&&v?600:400,
-                  color:v? (likely?"var(--ink)":"var(--muted)") : "var(--faint)"}}, v?fmt(v):"–"); }),
-              h("td",{className:"tnum",style:{textAlign:"right",fontWeight:700}}, fmt(rowTot(seg))))),
+                  color:v? (likely?"var(--ink)":"var(--muted)") : "var(--faint)"}}, v||"–"); }),
+              h("td",{className:"tnum",style:{textAlign:"right",fontWeight:700}}, rowTot(seg)||"–"))),
             h("tr",{className:"tot"},
               h("td",null,"Total"),
-              STAGES.map(s=>h("td",{key:s,className:"tnum",style:{textAlign:"right"}}, fmt(colTot(s)))),
-              h("td",{className:"tnum",style:{textAlign:"right"}}, fmt(grand)))
+              STAGES.map(s=>h("td",{key:s,className:"tnum",style:{textAlign:"right"}}, colTot(s)||"–")),
+              h("td",{className:"tnum",style:{textAlign:"right"}}, grand))
           )))
     ),
 
@@ -838,24 +864,27 @@ function PipelineTab({user,year}){
         h("div",{className:"csub",style:{margin:0}},
           (stageFilter==="all"?"All statuses":stageFilter)+" · "+deals.length+" deals · "+prod+" · Jan–Dec, scroll ↔; the annual total is the sum. "+
           (editable? "Enter units per month. " : "Showing MX7 + MX Pro combined — pick MX7 or MX Pro to edit. ")+
-          "The highlighted 3 months ("+[m0,m0+1,m0+2].filter(i=>i<12).map(i=>MONTHS[i].slice(0,3)).join("/")+") of FCST & Live deals feed the FCST tab.")),
+          "The highlighted 3 months ("+win3.map(w=>MONTHS[w.mi].slice(0,3)+" "+String(w.yr).slice(2)).join("/")+") of FCST & Live deals feed the FCST tab.")),
       h("div",{className:"tbl-wrap"},
         h("table",null,
           h("thead",null,h("tr",null,
             h("th",{style:{position:"sticky",left:0,background:"var(--surface)",zIndex:2}},"Customer"),
             h("th",null,"Status"),
             MONTHS.map((mm,i)=>h("th",{key:i,style:{textAlign:"center",minWidth:38,padding:"8px 2px",fontSize:11,
-              background:(i>=m0&&i<m0+3)?"var(--azure-soft)":undefined}}, mm)),
+              background:inWin3(i)?"var(--azure-soft)":undefined}}, mm)),
             h("th",{style:{textAlign:"right"}},"Annual"))),
           h("tbody",null,
-            deals.map((d,ri)=>{
+            [].concat(...deals.map((d,ri)=>{
               const near=LIKELY.includes(d.stage);
-              return h("tr",{key:ri},
+              const isEd = editKey===dealKey(d);
+              const mainRow = h("tr",{key:ri},
                 h("td",{style:{position:"sticky",left:0,background:"var(--surface)",zIndex:1,whiteSpace:"nowrap"}},
-                  d.c, d.isNew? h("span",{className:"badge",style:{marginLeft:6,background:"var(--azure-soft)",color:"var(--azure)",borderColor:"var(--azure)"}},"NEW"):null),
+                  h("span",{onClick:()=>setEditKey(isEd?null:dealKey(d)),title:"Click to change status / channel",
+                    style:{cursor:"pointer",borderBottom:"1px dotted var(--muted)",color:isEd?"var(--azure)":"inherit"}}, d.c),
+                  d.isNew? h("span",{className:"badge",style:{marginLeft:6,background:"var(--azure-soft)",color:"var(--azure)",borderColor:"var(--azure)"}},"NEW"):null),
                 h("td",{style:{whiteSpace:"nowrap"}}, h("span",{style:{display:"inline-block",width:8,height:8,borderRadius:"50%",background:STAGE_COLOR[d.stage],marginRight:6}}), d.stage,
                   near? h("span",{className:"badge",style:{marginLeft:6,background:"var(--good-bg)",color:"var(--good)",borderColor:"var(--good)"}},"→FCST"):null),
-                MONTHS.map((_,i)=>{ const inWin=(i>=m0&&i<m0+3); const v=marr(d)[i];
+                MONTHS.map((_,i)=>{ const inWin=inWin3(i); const v=marr(d)[i];
                   return h("td",{key:i,style:{padding:"3px 2px",textAlign:"center",background:inWin&&near?"rgba(0,177,161,.06)":undefined}},
                     editable
                       ? h("input",{type:"number",min:0,value:v,onChange:e=>setMonth(d,i,e.target.value),
@@ -863,7 +892,22 @@ function PipelineTab({user,year}){
                             borderRadius:5,background:"var(--surface)",color:"var(--ink)",font:"inherit",fontSize:11.5,fontWeight:inWin&&near?700:500,fontVariantNumeric:"tabular-nums"}})
                       : h("span",{className:"tnum",style:{fontSize:11.5,fontWeight:inWin&&near?700:500,fontVariantNumeric:"tabular-nums"}}, v||"–")); }),
                 h("td",{className:"tnum",style:{textAlign:"right",fontWeight:700}}, fmt(annual(d))));
-            }),
+              if(!isEd) return [mainRow];
+              // inline editor row
+              const editRow = h("tr",{key:ri+"-ed",style:{background:"var(--azure-soft)"}},
+                h("td",{colSpan:MONTHS.length+3,style:{padding:"10px 16px"}},
+                  h("div",{style:{display:"flex",flexWrap:"wrap",gap:14,alignItems:"center"}},
+                    h("span",{style:{fontWeight:600}}, "Edit "+d.c+":"),
+                    h("label",{style:{display:"flex",alignItems:"center",gap:6,fontSize:12.5}}, "Status",
+                      h("select",{value:d.stage,onChange:e=>setDealStage(d,e.target.value)},
+                        STAGES.map(s=>h("option",{key:s,value:s}, s)))),
+                    role!=="rep"? h("label",{style:{display:"flex",alignItems:"center",gap:6,fontSize:12.5}}, "Channel / segment",
+                      h("select",{value:d.ch,onChange:e=>setDealChan(d,e.target.value)},
+                        CHANNELS.map(c=>h("option",{key:c,value:c}, c)))) : null,
+                    h("button",{className:"go",style:{width:"auto",padding:"6px 14px",fontSize:12},
+                      onClick:()=>setEditKey(null)}, "Done"))));
+              return [mainRow, editRow];
+            })),
             h("tr",{className:"tot"},
               h("td",{style:{position:"sticky",left:0,background:"var(--sun)",zIndex:1}},"Total"),
               h("td",null,""),
@@ -896,13 +940,15 @@ function FcstTab({user,year}){
   const base = pipe.filter(d=> (d.stage==="FCST"||d.stage==="Live") &&
     (role==="rep" ? d.ch===channel : (chFilter==="all"||d.ch===chFilter)));
 
-  // rolling window: current month (m0), +1, +2 — all Forecast, clamped to the year
+  // rolling window: current month (m0), +1, +2 — always 3 months from "today",
+  // wrapping across the year boundary (e.g. Nov/Dec → Jan of next year).
   const m0=CUR_MONTH;
-  const win=[0,1,2].map(d=>m0+d).filter(i=>i<12);
-  // lock rule: the +1 month is locked after the first week (day > 7) of the current month,
+  // each slot: {mi: 0-11 month index into the single-year store, yr: calendar year, pos: 0/1/2}
+  const win=[0,1,2].map(d=>({ mi:(m0+d)%12, yr:year+Math.floor((m0+d)/12), pos:d }));
+  // lock rule: the +1 month (pos 1) is locked after the first week (day > 7) of the current month,
   // unless a Manager has unlocked it.
   const firstWeekPassed = TODAY_DOM > 7;
-  const monthLocked = (i)=> i===m0+1 && firstWeekPassed && !(role==="manager" && unlocked);
+  const monthLocked = (w)=> w.pos===1 && firstWeekPassed && !(role==="manager" && unlocked);
 
   // values come from the shared store via the product selector; edits write back so Pipeline agrees
   const marr=(d)=> pm(d.m, prod);
@@ -911,8 +957,12 @@ function FcstTab({user,year}){
   const fmt = u => unit==="value" ? gbpK(u*price) : u.toLocaleString();
 
   const colTot = (i)=> base.reduce((s,d)=>s+(marr(d)[i]||0),0);
-  const winUnits = win.reduce((s,i)=>s+colTot(i),0);
+  const winUnits = win.reduce((s,w)=>s+colTot(w.mi),0);
   const winRev = winUnits*price;
+  // short + full month-year labels for a window slot
+  const mlab = (w)=> MONTHS[w.mi].slice(0,3)+" "+String(w.yr).slice(2);
+  const mfull = (w)=> MONTHS[w.mi]+" "+w.yr;
+  const w1 = win[1]; // the +1 (lockable) month slot
 
   return h("div",null,
     // rolling-window explainer + lock state
@@ -921,16 +971,16 @@ function FcstTab({user,year}){
       h("div",null,
         h("div",{className:"wt"},"Rolling 3-month forecast"),
         h("div",{className:"ws"},
-          "Window: "+win.map(i=>MONTHS[i]).join(" · ")+" "+year+". "+
+          "Window: "+win.map(w=>mfull(w)).join(" · ")+". "+
           "These figures come from the FCST and Live deals in the Pipeline tab — editing here updates both. "+
           (firstWeekPassed
-            ? (monthLocked(m0+1)
-                ? MONTHS[m0+1]+" is locked (first week of "+MONTHS[m0]+" has passed)."
-                : MONTHS[m0+1]+" is open — unlocked by Manager.")
-            : MONTHS[m0+1]+" is still open (within the first week)."))),
-      role==="manager" && win.includes(m0+1) && firstWeekPassed
+            ? (monthLocked(w1)
+                ? mfull(w1)+" is locked (first week of "+MONTHS[m0]+" has passed)."
+                : mfull(w1)+" is open — unlocked by Manager.")
+            : mfull(w1)+" is still open (within the first week)."))),
+      role==="manager" && firstWeekPassed
         ? h("button",{className:"go",style:{width:"auto",padding:"9px 16px",fontSize:12.5},
-            onClick:()=>setUnlocked(v=>!v)}, unlocked?"🔒 Re-lock "+MONTHS[m0+1]:"🔓 Unlock "+MONTHS[m0+1])
+            onClick:()=>setUnlocked(v=>!v)}, unlocked?"🔒 Re-lock "+MONTHS[w1.mi]:"🔓 Unlock "+MONTHS[w1.mi])
         : h("div",{className:"wseg"},
             h("span",{className:"wd",style:{background:CH_COLOR[channel]||"var(--indigo)"}}),
             role==="manager"?"All channels":channel)
@@ -939,7 +989,7 @@ function FcstTab({user,year}){
     h("div",{className:"toolbar"},
       role!=="rep" ? h("select",{value:chFilter,onChange:e=>setChFilter(e.target.value)},
         h("option",{value:"all"},"All channels"),
-        CHANNELS.map(c=>h("option",{key:c,value:c}, c+" · "+OWNER[c]))) : null,
+        CHANNELS.map(c=>h("option",{key:c,value:c}, c))) : null,
       ProdToggle(prod,setProd),
       h("div",{className:"seg"},
         h("button",{className:unit==="units"?"on":"",onClick:()=>setUnit("units")},"Units"),
@@ -952,16 +1002,16 @@ function FcstTab({user,year}){
       h("div",{className:"hlc bp"},
         h("div",{className:"hk"},"3-month forecast · units"),
         h("div",{className:"hbig"}, winUnits.toLocaleString(),
-          h("span",{style:{fontSize:13,fontWeight:600,color:"var(--muted)",marginLeft:8}}, win.map(i=>MONTHS[i].slice(0,3)).join("+"))),
-        h("div",{className:"hrow"}, win.map(i=>h("div",{key:i},
-          h("div",{className:"hk2"},MONTHS[i]),
-          h("div",{className:"hv2 tnum"}, colTot(i).toLocaleString()))))),
+          h("span",{style:{fontSize:13,fontWeight:600,color:"var(--muted)",marginLeft:8}}, win.map(w=>MONTHS[w.mi].slice(0,3)).join("+"))),
+        h("div",{className:"hrow"}, win.map((w,k)=>h("div",{key:k},
+          h("div",{className:"hk2"},mlab(w)),
+          h("div",{className:"hv2 tnum"}, colTot(w.mi).toLocaleString()))))),
       h("div",{className:"hlc fc"},
         h("div",{className:"hk"},"3-month forecast · revenue"),
         h("div",{className:"hbig"}, gbpK(winRev)),
-        h("div",{className:"hrow"}, win.map(i=>h("div",{key:i},
-          h("div",{className:"hk2"},MONTHS[i]),
-          h("div",{className:"hv2 tnum"}, gbpK(colTot(i)*price))))))
+        h("div",{className:"hrow"}, win.map((w,k)=>h("div",{key:k},
+          h("div",{className:"hk2"},mlab(w)),
+          h("div",{className:"hv2 tnum"}, gbpK(colTot(w.mi)*price))))))
     ),
 
     // editable grid
@@ -975,39 +1025,39 @@ function FcstTab({user,year}){
         h("table",null,
           h("thead",null,h("tr",null,
             h("th",null,"Customer"),
-            win.map(i=>h("th",{key:i,style:{textAlign:"center"}},
-              h("div",null,MONTHS[i]+" "+year),
+            win.map((w,k)=>h("th",{key:k,style:{textAlign:"center"}},
+              h("div",null,MONTHS[w.mi]+" "+w.yr),
               h("div",{style:{fontSize:9.5,fontWeight:500,color:"var(--muted)",textTransform:"none",letterSpacing:0}},
-                "Forecast"+(monthLocked(i)?" · 🔒":"")))),
+                "Forecast"+(monthLocked(w)?" · 🔒":"")))),
             h("th",{style:{textAlign:"right"}},"3-mo"))),
           h("tbody",null,
             base.length? base.map((d,ri)=>h("tr",{key:ri},
               h("td",null, d.c, h("span",{style:{marginLeft:8,fontSize:10,color:"var(--muted)",fontWeight:400}}, d.ch),
                 h("span",{className:"badge",style:{marginLeft:8,background:"var(--good-bg)",color:"var(--good)",borderColor:"var(--good)"}}, d.stage)),
-              win.map(i=>{
-                const locked=monthLocked(i)||!editable, v=marr(d)[i]||0;
-                return h("td",{key:i,className:"tnum",style:{textAlign:"center",padding:"4px 6px",verticalAlign:"top"}},
+              win.map((w,k)=>{
+                const locked=monthLocked(w)||!editable, v=marr(d)[w.mi]||0;
+                return h("td",{key:k,className:"tnum",style:{textAlign:"center",padding:"4px 6px",verticalAlign:"top"}},
                   locked
                     ? h("span",{style:{color:"var(--muted)",display:"inline-block",padding:"5px 0"}}, fmt(v))
                     : h("input",{type:"number",min:0,value:v,
-                        onChange:e=>setVal(d,i,e.target.value),
+                        onChange:e=>setVal(d,w.mi,e.target.value),
                         style:{width:72,textAlign:"right",padding:"5px 7px",border:"1px solid var(--line-strong)",
-                          borderRadius:7,background:i===m0?"var(--azure-soft)":"var(--surface)",
+                          borderRadius:7,background:w.pos===0?"var(--azure-soft)":"var(--surface)",
                           color:"var(--ink)",font:"inherit",fontWeight:600,fontVariantNumeric:"tabular-nums"}}));
               }),
               h("td",{className:"tnum",style:{textAlign:"right",fontWeight:600}},
-                fmt(win.reduce((s,i)=>s+(marr(d)[i]||0),0)))
+                fmt(win.reduce((s,w)=>s+(marr(d)[w.mi]||0),0)))
             )) : h("tr",null,h("td",{colSpan:5,style:{padding:"18px",textAlign:"center",color:"var(--muted)"}},
               "No FCST or Live deals in this channel yet — move a deal to FCST or Live in the Pipeline tab.")),
             base.length? h("tr",{className:"tot"},
               h("td",null,"Total"),
-              win.map(i=>h("td",{key:i,className:"tnum",style:{textAlign:"center"}}, fmt(colTot(i)))),
+              win.map((w,k)=>h("td",{key:k,className:"tnum",style:{textAlign:"center"}}, fmt(colTot(w.mi)))),
               h("td",{className:"tnum",style:{textAlign:"right"}}, fmt(winUnits))):null
           )))
     ),
     h("div",{className:"muted",style:{fontSize:11.5,marginTop:12,lineHeight:1.6}},
       "This 3-month view mirrors the same months of the FCST and Live deals in the Pipeline tab — the numbers are always identical. "+
-      "The lock reflects the month-end cut-off: once the first week of "+MONTHS[m0]+" passes, "+(win.includes(m0+1)?MONTHS[m0+1]:"the next month")+" is committed and only a Manager can reopen it.")
+      "The lock reflects the month-end cut-off: once the first week of "+MONTHS[m0]+" passes, "+MONTHS[w1.mi]+" is committed and only a Manager can reopen it.")
   );
 }
 
@@ -1262,7 +1312,7 @@ function PerfTab({user,year}){
     h("div",{className:"toolbar"},
       role!=="rep"
         ? h("select",{value:repCh,onChange:e=>setRepCh(e.target.value)},
-            CHANNELS.map(c=>h("option",{key:c,value:c}, c+" · "+OWNER[c])))
+            CHANNELS.map(c=>h("option",{key:c,value:c}, c)))
         : h("span",{className:"badge",style:{background:"var(--surface-2)"}}, channel+" · "+OWNER[channel]),
       h("select",{value:period,onChange:e=>setPeriod(e.target.value)},
         h("option",{value:"ytd"},"YTD (Jan–"+MONTHS[CUR_MONTH]+")"),

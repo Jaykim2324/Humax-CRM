@@ -663,24 +663,33 @@ function SalesTab({user,year}){
 
     h("div",{className:"card",style:{padding:0,overflow:"hidden"}},
       h("div",{style:{padding:"13px 16px"}},
-        h("h3",null,"Monthly BP / FCST / Actual by customer"),
-        h("div",{className:"csub",style:{margin:0}},"Each customer shows three lines — Business Plan, Forecast, Actual. "+MONTHS[m]+" highlighted.")),
+        h("h3",null,"Monthly BP / FCST / Actual by segment"),
+        h("div",{className:"csub",style:{margin:0}},"Each segment shows three lines — Business Plan, Forecast (DM), Actual — totalled across its customers. "+MONTHS[m]+" highlighted.")),
       h("div",{className:"tbl-wrap"},
         h("table",null,
           h("thead",null,h("tr",null,
-            h("th",null,"Customer / line"),
+            h("th",null,"Segment / line"),
             MONTHS.map((mm,i)=>h("th",{key:i}, mm)),
             h("th",null,"YTD"))),
           h("tbody",null,
-            rows.map((r,ri)=>[
-              h("tr",{className:"grp",key:"g"+ri},
-                h("td",null, r.c, h("span",{style:{marginLeft:8,fontSize:10,color:"var(--muted)",fontWeight:400}}, r.ch)),
-                MONTHS.map((_,i)=>h("td",{key:i})), h("td",null)),
-              line("BP",pv(r,"bp"),"bp"),
-              line("FCST (DM)",pv(r,"fc"),"fc"),
-              line("Actual",pv(r,"ac"),"ac"),
-            ]),
-            // channel total (Actual)
+            // which segments to show: a rep sees only their own; a manager sees all in scope
+            (role==="rep" ? [channel] : (chFilter==="all"?CHANNELS:[chFilter]))
+              .map(seg=>{
+                const segRows = rows.filter(r=>r.ch===seg);
+                if(!segRows.length) return null;
+                const sbp=Array(12).fill(0),sfc=Array(12).fill(0),sac=Array(12).fill(0);
+                segRows.forEach(r=>MONTHS.forEach((_,i)=>{sbp[i]+=pv(r,"bp")[i];sfc[i]+=pv(r,"fc")[i];sac[i]+=pv(r,"ac")[i];}));
+                return [
+                  h("tr",{className:"grp",key:"g"+seg},
+                    h("td",null, h("span",{style:{display:"inline-block",width:8,height:8,borderRadius:"50%",background:CH_COLOR[seg]||"var(--indigo)",marginRight:7}}),
+                      seg, h("span",{style:{marginLeft:8,fontSize:10,color:"var(--muted)",fontWeight:400}}, segRows.length+" customer"+(segRows.length!==1?"s":""))),
+                    MONTHS.map((_,i)=>h("td",{key:i})), h("td",null)),
+                  line("BP",sbp,"bp"),
+                  line("FCST (DM)",sfc,"fc"),
+                  line("Actual",sac,"ac"),
+                ];
+              }).filter(Boolean),
+            // overall total across all shown segments (Actual)
             h("tr",{className:"tot",key:"tot"},
               h("td",null,"Total Actual"),
               MONTHS.map((_,i)=>h("td",{key:i,className:"tnum"}, tot.ac[i]?fmt(tot.ac[i]):"–")),

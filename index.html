@@ -169,6 +169,7 @@ const h = React.createElement;
 
 /* ============================== CONFIG ============================== */
 const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const APP_VERSION="v1.3 · 2026-11-17"; // bump on each deploy so you can confirm the live build
 const CHANNELS=["Retail","Automotive","Installer/Reseller","eCommerce"];
 const OWNER={Retail:"Simon",Automotive:"Matthew","Installer/Reseller":"Niall",eCommerce:"Sabby"};
 const SEGMENTS=["Retail Home","Retail Commercial","Automotive","Installer/Reseller","eCommerce"];
@@ -387,7 +388,8 @@ function Gate({onEnter}){
     h("div",{className:"err"},err),
     h("button",{className:"go",onClick:go},"Enter"),
     h("div",{style:{marginTop:14,fontSize:11,color:"var(--muted)",textAlign:"center",lineHeight:1.6}},
-      "Each person has their own PIN — reps see only their channel.")
+      "Each person has their own PIN — reps see only their channel."),
+    h("div",{style:{marginTop:10,fontSize:10.5,color:"var(--muted)",textAlign:"center",opacity:.7}}, APP_VERSION)
   ));
 }
 
@@ -1536,7 +1538,7 @@ function App(){
     navOpen?h("div",{className:"scrim open",onClick:()=>setNavOpen(false)}):null,
     h("aside",{className:"sidebar"+(navOpen?" open":"")},
       h("div",{className:"brand"},h("div",{className:"logo"},"H"),
-        h("div",null,h("div",{className:"bt"},"Humax B2B Pipeline"),h("div",{className:"bs"},"Console · test build"))),
+        h("div",null,h("div",{className:"bt"},"Humax B2B Pipeline"),h("div",{className:"bs"},"Console · "+APP_VERSION))),
       h("nav",null, NAV.map((n,i)=> n.grp
         ? h("div",{className:"lbl",key:"g"+i},n.grp)
         : h("button",{key:n.id,className:"nav-i"+(tab===n.id?" on":""),onClick:()=>pick(n.id)},

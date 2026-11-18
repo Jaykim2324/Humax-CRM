@@ -169,7 +169,7 @@ const h = React.createElement;
 
 /* ============================== CONFIG ============================== */
 const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION="v1.9 · 2026-11-17"; // bump on each deploy so you can confirm the live build
+const APP_VERSION="v2.0 · 2026-11-18"; // bump on each deploy so you can confirm the live build
 const CHANNELS=["Retail","Automotive","Installer/Reseller","eCommerce"];
 const OWNER={Retail:"Simon",Automotive:"Matthew","Installer/Reseller":"Niall",eCommerce:"Sabby"};
 const SEGMENTS=["Retail Home","Retail Commercial","Automotive","Installer/Reseller","eCommerce"];
@@ -379,17 +379,19 @@ function weeksOfMonth(year,m){
   for(; d<=last; d.setDate(d.getDate()+1)){
     if(d.getDay()===0){ // Sunday
       const sun=new Date(d), mon=new Date(d); mon.setDate(mon.getDate()-6);
-      weeks.push({we:ymd(sun), start:ymd(mon),
-        label:"Wk ending "+pad2(sun.getDate())+" "+MONTHS[sun.getMonth()]});
+      weeks.push({we:ymd(sun), start:ymd(mon), partial:false,
+        range:pad2(mon.getDate())+" "+MONTHS[mon.getMonth()].slice(0,3)+"–"+pad2(sun.getDate())+" "+MONTHS[sun.getMonth()].slice(0,3)});
     }
   }
   // if the month ends mid-week (last day not a Sunday), add a final partial week
   if(last.getDay()!==0){
     const sun=new Date(last); // use month-end as the closing date of the partial week
     const mon=new Date(last); mon.setDate(mon.getDate()-last.getDay()+1);
-    weeks.push({we:ymd(sun), start:ymd(mon),
-      label:"Wk ending "+pad2(sun.getDate())+" "+MONTHS[sun.getMonth()]+" (partial)"});
+    weeks.push({we:ymd(sun), start:ymd(mon), partial:true,
+      range:pad2(mon.getDate())+" "+MONTHS[mon.getMonth()].slice(0,3)+"–"+pad2(sun.getDate())+" "+MONTHS[sun.getMonth()].slice(0,3)});
   }
+  // number them WK1, WK2… in order
+  weeks.forEach((w,i)=>{ w.wk="WK"+(i+1); w.label="WK"+(i+1)+(w.partial?" (partial)":""); });
   return weeks;
 }
 function weeklyUnits(year,c,ch,product,we){
@@ -708,7 +710,9 @@ function WeeklyEntry({user,year}){
         h("thead",null,h("tr",null,
           h("th",{style:{position:"sticky",left:0,background:"var(--surface)",zIndex:2,minWidth:170}},"Customer"),
           h("th",null,"Segment"),
-          weeks.map((w,k)=>h("th",{key:k,style:{textAlign:"center",minWidth:92,fontSize:10.5,lineHeight:1.25,whiteSpace:"nowrap"}}, w.label)),
+          weeks.map((w,k)=>h("th",{key:k,style:{textAlign:"center",minWidth:82,whiteSpace:"nowrap"}},
+            h("div",{style:{fontWeight:700}}, w.wk, w.partial?h("span",{style:{fontWeight:500}}," (p)"):null),
+            h("div",{style:{fontSize:9,fontWeight:500,color:"var(--muted)",textTransform:"none",letterSpacing:0}}, w.range))),
           h("th",{style:{textAlign:"right"}},"Month"))),
         h("tbody",null,
           custs.length? custs.map((r,ri)=>{

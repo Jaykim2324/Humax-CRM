@@ -169,7 +169,7 @@ const h = React.createElement;
 
 /* ============================== CONFIG ============================== */
 const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const APP_VERSION="v2.0 · 2026-11-18"; // bump on each deploy so you can confirm the live build
+const APP_VERSION="v2.1 · 2026-11-20"; // bump on each deploy so you can confirm the live build
 const CHANNELS=["Retail","Automotive","Installer/Reseller","eCommerce"];
 const OWNER={Retail:"Simon",Automotive:"Matthew","Installer/Reseller":"Niall",eCommerce:"Sabby"};
 const SEGMENTS=["Retail Home","Retail Commercial","Automotive","Installer/Reseller","eCommerce"];
@@ -350,7 +350,16 @@ function splitByProduct(arr, key){
    Both the Pipeline tab (full-year entry) and the FCST tab (3-month view) read this store,
    so the numbers for the current month + next two are identical on both screens.
    A version counter lets either tab force a re-render after an edit. */
-const PIPE = SAMPLE.pipeline.map(d=>({c:d.c,ch:d.ch,stage:d.stage,isNew:d.isNew, m:splitByProduct(d.m, d.ch)}));
+// Pipeline is kept per year (Pipeline_2026 / Pipeline_2027 tabs). PIPE_BY_YEAR[year] = [deals].
+// A deal row: {c,ch,stage,isNew, m:{mx7:[12],mxpro:[12]}}. The same customer may appear in
+// more than one year's list (with that year's monthly quantities).
+const PIPE_BY_YEAR = {};
+PIPE_BY_YEAR[String(CUR_YEAR)] = SAMPLE.pipeline.map(d=>({c:d.c,ch:d.ch,stage:d.stage,isNew:d.isNew, m:splitByProduct(d.m, d.ch)}));
+function pipeFor(year){
+  const yr=String(year);
+  if(!PIPE_BY_YEAR[yr]) PIPE_BY_YEAR[yr]=[];
+  return PIPE_BY_YEAR[yr];
+}
 
 /* Sales customers are kept per year (live data comes from Sales_<year> tabs).
    Years without live data fall back to the demo customers so the UI isn't blank. */
@@ -411,14 +420,9 @@ function setWeeklyUnits(year,c,ch,product,we,units){
 let PIPE_VER=0;
 const pipeSubs=new Set();
 function bumpPipe(){ PIPE_VER++; pipeSubs.forEach(fn=>fn(PIPE_VER)); }
-function usePipe(){ const [,set]=useState(PIPE_VER);
+function usePipe(year){ const [,set]=useState(PIPE_VER);
   useEffect(()=>{ pipeSubs.add(set); return ()=>pipeSubs.delete(set); },[]);
-  return PIPE; }
-// 3-month FCST figure (current + next 2) for a channel, from FCST/Live deals only
-function fcstMonthForChannel(ch, monthIdx){
-  return PIPE.filter(d=>d.ch===ch && (d.stage==="FCST"||d.stage==="Live"))
-    .reduce((a,d)=>a+(d.m[monthIdx]||0),0);
-}
+  return pipeFor(year==null?CUR_YEAR:year); }
 
 /* ============================== GATE ============================== */
 function Gate({onEnter}){
@@ -875,9 +879,11 @@ function SalesTab({user,year}){
 const STAGES=["Suspect","Prospect","Proposal","Contract","FCST","Live"];
 const LIKELY=["FCST","Live"]; // only these count toward likely-PO
 const STAGE_COLOR={Suspect:"#9aa7b8",Prospect:"#6ba3d6",Proposal:"#2f6fb0",Contract:"#b7791f",FCST:"var(--azure)",Live:"var(--good)"};
+const PIPE_YEARS=[2026,2027];
 function PipelineTab({user,year}){
   const role=user.role, channel=user.channel;
-  const pipe=usePipe(); // live shared store
+  const [pyear,setPyear]=useState(PIPE_YEARS.includes(CUR_YEAR)?CUR_YEAR:PIPE_YEARS[0]);
+  const pipe=usePipe(pyear); // live shared store for the selected pipeline year
   const [chFilter,setChFilter]=useState(role==="rep"?channel:"all");
   const [stageFilter,setStageFilter]=useState("all");
   const [unit,setUnit]=useState("units"); // units | value
@@ -893,9 +899,10 @@ function PipelineTab({user,year}){
   const rev = u => gbpK(u*price);
   const fmt = u => unit==="value" ? gbpK(u*price) : u.toLocaleString();
   const m0=CUR_MONTH;
-  // rolling 3-month window from "today", wrapping the year boundary (Nov/Dec → Jan)
-  const win3=[0,1,2].map(d=>({ mi:(m0+d)%12, yr:year+Math.floor((m0+d)/12), pos:d }));
-  const inWin3=(i)=> win3.some(w=>w.mi===i);
+  // the current-month 3-month window only highlights inside the selected year when that
+  // year is the current one; for a future year the whole year is "ahead", so no highlight.
+  const win3=(pyear===CUR_YEAR)?[0,1,2].map(d=>({ mi:(m0+d)%12, yr:pyear+Math.floor((m0+d)/12), pos:d })):[];
+  const inWin3=(i)=> win3.some(w=>w.mi===i && w.yr===pyear);
 
   // segments shown (channels in scope)
   const segs = role==="rep" ? [channel] : (chFilter==="all"? CHANNELS : [chFilter]);
@@ -913,9 +920,9 @@ function PipelineTab({user,year}){
   const monCol=(i)=> deals.reduce((a,d)=>a+(marr(d)[i]||0),0);
 
   const save=async ()=>{
-    try{ sessionStorage.setItem("hx_pipe_pending",JSON.stringify(pipe.map(d=>({c:d.c,m:d.m})))); }catch(e){}
-    const r = await pushToSheet("pipeline", { rows: pipe.map(d=>({c:d.c,ch:d.ch,stage:d.stage,isNew:d.isNew,m:d.m})) });
-    alert(r.ok ? ("Saved "+dirty+" change(s) to the Google Sheet.")
+    try{ sessionStorage.setItem("hx_pipe_pending_"+pyear,JSON.stringify(pipe.map(d=>({c:d.c,m:d.m})))); }catch(e){}
+    const r = await pushToSheet("pipeline", { year:String(pyear), rows: pipe.map(d=>({c:d.c,ch:d.ch,stage:d.stage,isNew:d.isNew,m:d.m})) });
+    alert(r.ok ? ("Saved "+dirty+" change(s) to Pipeline_"+pyear+".")
                : ("Saved "+dirty+" change(s) locally.\n\n"+(r.demo?"Demo mode — set LIVE=true and paste the Web App URL to write to the Sheet.":"Sheet write failed: "+(r.error||"unknown"))));
     setDirty(0);
   };
@@ -942,6 +949,8 @@ function PipelineTab({user,year}){
 
   return h("div",null,
     h("div",{className:"toolbar"},
+      h("div",{className:"seg"}, PIPE_YEARS.map(yy=>
+        h("button",{key:yy,className:pyear===yy?"on":"",onClick:()=>{setPyear(yy);setDirty(0);}}, String(yy)))),
       role!=="rep" ? h("select",{value:chFilter,onChange:e=>setChFilter(e.target.value)},
         h("option",{value:"all"},"All segments"),
         CHANNELS.map(c=>h("option",{key:c,value:c}, c))) : null,
@@ -1082,7 +1091,7 @@ function PipelineTab({user,year}){
 const TODAY_DOM = 31; // demo "day of month" for the lock rule (real build: new Date().getDate())
 function FcstTab({user,year}){
   const role=user.role, channel=user.channel;
-  const pipe=usePipe(); // same shared store the Pipeline tab writes
+  usePipe(); // subscribe to the shared store (re-render on any pipeline change)
   const [chFilter,setChFilter]=useState(role==="rep"?channel:"all");
   const [unit,setUnit]=useState("units");
   const [prod,setProd]=useState("All"); // All | MX7 | MX Pro
@@ -1090,28 +1099,57 @@ function FcstTab({user,year}){
   const [,bump]=useState(0);
   const editable = prod!=="All"; // editing a specific product; "All" is a read-only sum
 
-  // only FCST + Live deals carry near-term forecast; filter to scope
-  const base = pipe.filter(d=> (d.stage==="FCST"||d.stage==="Live") &&
-    (role==="rep" ? d.ch===channel : (chFilter==="all"||d.ch===chFilter)));
-
   // rolling window: current month (m0), +1, +2 — always 3 months from "today",
-  // wrapping across the year boundary (e.g. Nov/Dec → Jan of next year).
+  // wrapping across the year boundary (e.g. Nov 2026 / Dec 2026 → Jan 2027).
   const m0=CUR_MONTH;
-  // each slot: {mi: 0-11 month index into the single-year store, yr: calendar year, pos: 0/1/2}
-  const win=[0,1,2].map(d=>({ mi:(m0+d)%12, yr:year+Math.floor((m0+d)/12), pos:d }));
-  // lock rule: the +1 month (pos 1) is locked after the first week (day > 7) of the current month,
+  // each slot: {mi: 0-11 month index, yr: calendar year the month belongs to, pos: 0/1/2}
+  const win=[0,1,2].map(d=>({ mi:(m0+d)%12, yr:CUR_YEAR+Math.floor((m0+d)/12), pos:d }));
+  const inScope=(d)=> (d.stage==="FCST"||d.stage==="Live") &&
+    (role==="rep" ? d.ch===channel : (chFilter==="all"||d.ch===chFilter));
+
+  // A forecast row spans the window and may draw each month from a DIFFERENT year's
+  // pipeline store. Identify a row by customer+channel; for each window slot, look up
+  // that customer's deal in that slot's year store.
+  const dealIn=(yr,c,ch)=> pipeFor(yr).find(d=>d.c===c&&d.ch===ch&&(d.stage==="FCST"||d.stage==="Live"));
+  // the set of (customer,channel) rows that appear as FCST/Live in ANY window year, in scope
+  const rowKeys=[]; const rowMeta={};
+  win.forEach(w=> pipeFor(w.yr).forEach(d=>{ if(!inScope(d)) return;
+    const k=d.c+"||"+d.ch; if(!rowMeta[k]){ rowMeta[k]={c:d.c,ch:d.ch,stage:d.stage}; rowKeys.push(k);} }));
+  const rows=rowKeys.map(k=>rowMeta[k]);
+
+  // lock rule: the +1 month (pos 1) is locked after the first week of the current month,
   // unless a Manager has unlocked it.
   const firstWeekPassed = TODAY_DOM > 7;
   const monthLocked = (w)=> w.pos===1 && firstWeekPassed && !(role==="manager" && unlocked);
 
-  // values come from the shared store via the product selector; edits write back so Pipeline agrees
-  const marr=(d)=> pm(d.m, prod);
-  const setVal=(d,i,v)=>{ d.m[PKEY[prod]][i]=v===""?0:Math.max(0,Math.round(+v)||0); bump(x=>x+1); bumpPipe(); };
+  // value of (row, window slot) = that customer's units for that month in that slot's year
+  const cellVal=(r,w)=>{ const d=dealIn(w.yr,r.c,r.ch); return d? (pm(d.m,prod)[w.mi]||0) : 0; };
+  // editing writes into the slot's year store, creating the deal there if needed
+  const setCell=(r,w,v)=>{
+    const u=v===""?0:Math.max(0,Math.round(+v)||0);
+    let d=pipeFor(w.yr).find(x=>x.c===r.c&&x.ch===r.ch);
+    if(!d){ d={c:r.c,ch:r.ch,stage:r.stage||"FCST",isNew:false,m:{mx7:Array(12).fill(0),mxpro:Array(12).fill(0)}}; pipeFor(w.yr).push(d); }
+    d.m[PKEY[prod]][w.mi]=u; bump(x=>x+1); bumpPipe();
+  };
   const price=priceFor(prod);
   const fmt = u => unit==="value" ? gbpK(u*price) : u.toLocaleString();
+  const [saving,setSaving]=useState(false);
+  // FCST edits can touch more than one year's store (Nov/Dec this year, Jan next year),
+  // so Save persists every distinct year in the window.
+  const save=async ()=>{
+    setSaving(true);
+    const years=[...new Set(win.map(w=>w.yr))];
+    let ok=true, msg=[];
+    for(const yr of years){
+      const r=await pushToSheet("pipeline",{ year:String(yr), rows: pipeFor(yr).map(d=>({c:d.c,ch:d.ch,stage:d.stage,isNew:d.isNew,m:d.m})) });
+      if(!r.ok){ ok=false; msg.push("Pipeline_"+yr+": "+(r.demo?"demo mode":(r.error||"failed"))); }
+    }
+    setSaving(false);
+    alert(ok? ("Saved forecast to Pipeline_"+years.join(" & ")+".") : ("Some saves failed:\n"+msg.join("\n")));
+  };
 
-  const colTot = (i)=> base.reduce((s,d)=>s+(marr(d)[i]||0),0);
-  const winUnits = win.reduce((s,w)=>s+colTot(w.mi),0);
+  const colTot = (w)=> rows.reduce((s,r)=>s+cellVal(r,w),0);
+  const winUnits = win.reduce((s,w)=>s+colTot(w),0);
   const winRev = winUnits*price;
   // short + full month-year labels for a window slot
   const mlab = (w)=> MONTHS[w.mi].slice(0,3)+" "+String(w.yr).slice(2);
@@ -1148,7 +1186,9 @@ function FcstTab({user,year}){
       h("div",{className:"seg"},
         h("button",{className:unit==="units"?"on":"",onClick:()=>setUnit("units")},"Units"),
         h("button",{className:unit==="value"?"on":"",onClick:()=>setUnit("value")},"Revenue £")),
-      h("span",{className:"muted",style:{fontSize:12}}, base.length+" FCST/Live deals · "+(role==="rep"?channel:(chFilter==="all"?"all channels":chFilter))+" · "+prod)
+      h("span",{className:"muted",style:{fontSize:12}}, rows.length+" FCST/Live deals · "+(role==="rep"?channel:(chFilter==="all"?"all channels":chFilter))+" · "+prod),
+      editable? h("button",{className:"go",style:{width:"auto",padding:"8px 16px",fontSize:12.5,marginLeft:"auto",opacity:saving?.6:1},
+        onClick:saving?undefined:save}, saving?"Saving…":"Save to Sheet") : null
     ),
 
     // 3-month forecast highlight
@@ -1159,13 +1199,13 @@ function FcstTab({user,year}){
           h("span",{style:{fontSize:13,fontWeight:600,color:"var(--muted)",marginLeft:8}}, win.map(w=>MONTHS[w.mi].slice(0,3)).join("+"))),
         h("div",{className:"hrow"}, win.map((w,k)=>h("div",{key:k},
           h("div",{className:"hk2"},mlab(w)),
-          h("div",{className:"hv2 tnum"}, colTot(w.mi).toLocaleString()))))),
+          h("div",{className:"hv2 tnum"}, colTot(w).toLocaleString()))))),
       h("div",{className:"hlc fc"},
         h("div",{className:"hk"},"3-month forecast · revenue"),
         h("div",{className:"hbig"}, gbpK(winRev)),
         h("div",{className:"hrow"}, win.map((w,k)=>h("div",{key:k},
           h("div",{className:"hk2"},mlab(w)),
-          h("div",{className:"hv2 tnum"}, gbpK(colTot(w.mi)*price))))))
+          h("div",{className:"hv2 tnum"}, gbpK(colTot(w)*price))))))
     ),
 
     // editable grid
@@ -1185,27 +1225,27 @@ function FcstTab({user,year}){
                 "Forecast"+(monthLocked(w)?" · 🔒":"")))),
             h("th",{style:{textAlign:"right"}},"3-mo"))),
           h("tbody",null,
-            base.length? base.map((d,ri)=>h("tr",{key:ri},
-              h("td",null, d.c, h("span",{style:{marginLeft:8,fontSize:10,color:"var(--muted)",fontWeight:400}}, d.ch),
-                h("span",{className:"badge",style:{marginLeft:8,background:"var(--good-bg)",color:"var(--good)",borderColor:"var(--good)"}}, d.stage)),
+            rows.length? rows.map((r,ri)=>h("tr",{key:ri},
+              h("td",null, r.c, h("span",{style:{marginLeft:8,fontSize:10,color:"var(--muted)",fontWeight:400}}, r.ch),
+                h("span",{className:"badge",style:{marginLeft:8,background:"var(--good-bg)",color:"var(--good)",borderColor:"var(--good)"}}, r.stage)),
               win.map((w,k)=>{
-                const locked=monthLocked(w)||!editable, v=marr(d)[w.mi]||0;
+                const locked=monthLocked(w)||!editable, v=cellVal(r,w);
                 return h("td",{key:k,className:"tnum",style:{textAlign:"center",padding:"4px 6px",verticalAlign:"top"}},
                   locked
                     ? h("span",{style:{color:"var(--muted)",display:"inline-block",padding:"5px 0"}}, fmt(v))
                     : h("input",{type:"number",min:0,value:v,
-                        onChange:e=>setVal(d,w.mi,e.target.value),
+                        onChange:e=>setCell(r,w,e.target.value),
                         style:{width:72,textAlign:"right",padding:"5px 7px",border:"1px solid var(--line-strong)",
                           borderRadius:7,background:w.pos===0?"var(--azure-soft)":"var(--surface)",
                           color:"var(--ink)",font:"inherit",fontWeight:600,fontVariantNumeric:"tabular-nums"}}));
               }),
               h("td",{className:"tnum",style:{textAlign:"right",fontWeight:600}},
-                fmt(win.reduce((s,w)=>s+(marr(d)[w.mi]||0),0)))
+                fmt(win.reduce((s,w)=>s+cellVal(r,w),0)))
             )) : h("tr",null,h("td",{colSpan:5,style:{padding:"18px",textAlign:"center",color:"var(--muted)"}},
               "No FCST or Live deals in this channel yet — move a deal to FCST or Live in the Pipeline tab.")),
-            base.length? h("tr",{className:"tot"},
+            rows.length? h("tr",{className:"tot"},
               h("td",null,"Total"),
-              win.map((w,k)=>h("td",{key:k,className:"tnum",style:{textAlign:"center"}}, fmt(colTot(w.mi)))),
+              win.map((w,k)=>h("td",{key:k,className:"tnum",style:{textAlign:"center"}}, fmt(colTot(w)))),
               h("td",{className:"tnum",style:{textAlign:"right"}}, fmt(winUnits))):null
           )))
     ),
@@ -1799,11 +1839,19 @@ async function boot(){
       USERS.length=0; data.users.forEach(u=>USERS.push({pin:String(u.pin),name:u.name,role:u.role,channel:u.channel||null}));
     }
 
-    // --- Pipeline (each deal has m:{mx7:[12],mxpro:[12]}) ---
-    if(Array.isArray(data.pipeline) && data.pipeline.length){
-      PIPE.length=0;
-      data.pipeline.forEach(d=>PIPE.push({c:d.c,ch:d.ch,stage:d.stage,isNew:!!d.isNew,
-        m:{mx7:(d.m&&d.m.mx7)||Array(12).fill(0), mxpro:(d.m&&d.m.mxpro)||Array(12).fill(0)}}));
+    // --- Pipeline, per year (each deal has m:{mx7:[12],mxpro:[12]}) ---
+    const toDeal=d=>({c:d.c,ch:d.ch,stage:d.stage,isNew:!!d.isNew,
+      m:{mx7:(d.m&&d.m.mx7)||Array(12).fill(0), mxpro:(d.m&&d.m.mxpro)||Array(12).fill(0)}});
+    if(data.pipeline && !Array.isArray(data.pipeline) && typeof data.pipeline==="object"){
+      // new shape: { "2026":[rows], "2027":[rows] }
+      Object.keys(PIPE_BY_YEAR).forEach(k=>delete PIPE_BY_YEAR[k]);
+      Object.entries(data.pipeline).forEach(([yr,rows])=>{
+        if(Array.isArray(rows)) PIPE_BY_YEAR[yr]=rows.map(toDeal);
+      });
+      bumpPipe();
+    } else if(Array.isArray(data.pipeline) && data.pipeline.length){
+      // back-compat: a flat array is the current year
+      PIPE_BY_YEAR[String(CUR_YEAR)] = data.pipeline.map(toDeal);
       bumpPipe();
     }
 
